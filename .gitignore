@@ -44,6 +44,9 @@ docs/
 *.md
 !README.md
 
+# Local verification scripts — kept local, not published
+scripts/
+
 # IDE and OS files
 .vscode/
 .idea/
