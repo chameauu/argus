@@ -10,6 +10,8 @@ datasources:
     isDefault: true
     version: 1
     editable: false
+    jsonData:
+      timeInterval: 15s
 
   - name: Loki
     uid: loki
@@ -20,6 +22,12 @@ datasources:
     isDefault: false
     version: 1
     editable: false
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherRegex: "trace_id=(\\w+)"
+          datasourceUid: tempo
+          url: "$${__value.raw}"
 
   - name: Tempo
     uid: tempo
@@ -30,3 +38,14 @@ datasources:
     isDefault: false
     version: 1
     editable: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        filterByTraceID: true
+        filterBySpanID: false
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"

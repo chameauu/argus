@@ -1,0 +1,51 @@
+{
+  "uid": "argus-traces",
+  "title": "Argus — Traces & Correlation",
+  "tags": ["argus", "traces"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "How correlation works",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**trace → logs:** open any span in the Tempo panel below and use *Logs for this span* to jump to the matching Loki lines.\n\n**logs → trace:** in the Loki panel, every line containing `trace_id=...` gets a clickable **TraceID** button that opens the waterfall in Tempo.\n\nThis works because `target-app` logs via OpenTelemetry's `LoggingInstrumentor`, which injects the active `trace_id` into every record."
+      }
+    },
+    {
+      "id": 2,
+      "type": "traces",
+      "title": "Traces — target-app",
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"target-app\" }"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "logs",
+      "title": "Logs — target-app (with trace_id links)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 18 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{compose_service=\"target-app\"} |= \"trace_id=\""
+        }
+      ]
+    }
+  ]
+}

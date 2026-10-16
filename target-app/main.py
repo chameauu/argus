@@ -1,3 +1,4 @@
+import logging
 import os
 import random
 import time
@@ -7,6 +8,7 @@ from fastapi.responses import Response
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -21,6 +23,10 @@ def configure_tracing() -> None:
 
 
 configure_tracing()
+
+LoggingInstrumentor().instrument(set_logging_format=True)
+logger = logging.getLogger("target-app")
+logger.setLevel(logging.INFO)
 
 app = FastAPI(title="target-app")
 FastAPIInstrumentor.instrument_app(app)
@@ -51,6 +57,7 @@ def work():
     time.sleep(random.uniform(0.01, 0.08))
     http_request_duration_seconds.labels(endpoint="/work").observe(time.time() - start)
     http_requests_total.labels(endpoint="/work", status="200").inc()
+    logger.info("work completed")
     return {"result": "done"}
 
 
@@ -60,6 +67,7 @@ def error_prone():
     if random.random() < 0.15:
         http_request_duration_seconds.labels(endpoint="/error-prone").observe(time.time() - start)
         http_requests_total.labels(endpoint="/error-prone", status="500").inc()
+        logger.error("simulated failure in /error-prone")
         raise HTTPException(status_code=500, detail="simulated failure")
     http_request_duration_seconds.labels(endpoint="/error-prone").observe(time.time() - start)
     http_requests_total.labels(endpoint="/error-prone", status="200").inc()
@@ -71,6 +79,7 @@ def slow():
     start = time.time()
     if random.random() < 0.10:
         delay = random.uniform(0.6, 1.2)
+        logger.warning("slow path: sleeping %.2fs", delay)
         time.sleep(delay)
     else:
         time.sleep(random.uniform(0.02, 0.1))
