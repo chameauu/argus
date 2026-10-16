@@ -1,0 +1,88 @@
+groups:
+  - name: host
+    rules:
+      - alert: HostHighCPU
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: critical
+          component: host
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage has been above 85% for 5 minutes on {{ $labels.instance }} (current: {{ $value | printf \"%.1f\" }}%)."
+          runbook: runbooks/HostHighCPU.md
+
+      - alert: HostDiskFull
+        expr: (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"})) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          component: host
+        annotations:
+          summary: "Disk nearly full on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          description: "Filesystem {{ $labels.mountpoint }} is above 90% used (current: {{ $value | printf \"%.1f\" }}%)."
+          runbook: runbooks/HostDiskFull.md
+
+  - name: application
+    rules:
+      - alert: TargetAppDown
+        expr: up{job="target-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "target-app is unreachable"
+          description: "Prometheus has failed to scrape target-app for 1 minute."
+          runbook: runbooks/TargetAppDown.md
+
+      - alert: AppHighErrorRate
+        expr: |
+          (
+            sum(rate(target_app_http_requests_total{status=~"5.."}[2m]))
+            /
+            sum(rate(target_app_http_requests_total[2m]))
+          ) * 100 > 5
+        for: 2m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "High 5xx error rate on target-app"
+          description: "5xx error rate has exceeded 5% for 2 minutes (current: {{ $value | printf \"%.1f\" }}%)."
+          runbook: runbooks/AppHighErrorRate.md
+
+      - alert: AppHighLatency
+        expr: histogram_quantile(0.99, sum(rate(target_app_http_request_duration_seconds_bucket[3m])) by (le)) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "p99 latency above 500ms on target-app"
+          description: "p99 request latency has exceeded 500ms for 3 minutes (current: {{ $value | printf \"%.2f\" }}s)."
+          runbook: runbooks/AppHighLatency.md
+
+  - name: custom-exporter
+    rules:
+      - alert: CustomExporterQueueHigh
+        expr: job_queue_depth > 100
+        for: 30s
+        labels:
+          severity: warning
+          component: custom-exporter
+        annotations:
+          summary: "Job queue depth high"
+          description: "job_queue_depth has been above 100 for 30s (current: {{ $value }})."
+          runbook: runbooks/CustomExporterQueueHigh.md
+
+      - alert: WebhookDeliveryFailing
+        expr: webhook_delivery_success_ratio < 0.5
+        for: 30s
+        labels:
+          severity: critical
+          component: custom-exporter
+        annotations:
+          summary: "Webhook delivery success ratio below 50%"
+          description: "webhook_delivery_success_ratio has been below 0.5 for 30s (current: {{ $value | printf \"%.2f\" }})."
+          runbook: runbooks/WebhookDeliveryFailing.md

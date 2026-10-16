@@ -10,9 +10,24 @@ services:
       - --storage.tsdb.retention.time=7d
     volumes:
       - ./configs/prometheus:/etc/prometheus:ro
+      - ../alert-rules:/etc/prometheus-rules:ro
       - prometheus-data:/prometheus
     ports:
         - "19090:9090"
+    networks:
+      - obs-net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./configs/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    ports:
+        - "19093:9093"
     networks:
       - obs-net
 
@@ -150,6 +165,7 @@ services:
 
 volumes:
   prometheus-data:
+  alertmanager-data:
   grafana-data:
   loki-data:
   promtail-positions:

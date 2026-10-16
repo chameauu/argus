@@ -33,6 +33,20 @@ repos:
         pass_filenames: false
         files: ^docker-compose/configs/prometheus/.*\.ya?ml$
 
+      - id: promtool-check-rules
+        name: promtool check alert rules
+        entry: bash -c 'docker run --rm --entrypoint promtool -v "$PWD/alert-rules:/rules" prom/prometheus:v2.53.0 check rules /rules/rules.yml'
+        language: system
+        pass_filenames: false
+        files: ^alert-rules/.*\.ya?ml$
+
+      - id: amtool-check-config
+        name: amtool check alertmanager config
+        entry: bash -c 'docker run --rm --entrypoint amtool -v "$PWD/docker-compose/configs/alertmanager:/cfg" prom/alertmanager:v0.27.0 check-config /cfg/alertmanager.yml'
+        language: system
+        pass_filenames: false
+        files: ^docker-compose/configs/alertmanager/.*\.ya?ml$
+
       - id: loki-verify-config
         name: loki verify-config
         entry: bash -c 'docker run --rm -v "$PWD/docker-compose/configs/loki:/etc/loki" grafana/loki:3.4.2 -config.file=/etc/loki/loki-config.yml -verify-config'

@@ -44,6 +44,10 @@ docs/
 *.md
 !README.md
 
+# Runbooks ARE published — alert rules annotate runbook: runbooks/<Alert>.md
+!runbooks/
+!runbooks/*.md
+
 # Local verification scripts — kept local, not published
 scripts/
 

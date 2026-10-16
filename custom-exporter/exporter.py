@@ -2,10 +2,15 @@ import random
 import threading
 import time
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Query, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 app = FastAPI(title="custom-exporter")
+
+overrides: dict[str, float | None] = {
+    "job_queue_depth": None,
+    "webhook_delivery_success_ratio": None,
+}
 
 active_users_total = Gauge("active_users_total", "Current active users")
 job_queue_depth = Gauge("job_queue_depth", "Current queue depth")
@@ -37,7 +42,11 @@ def _simulate_business_metrics():
         arrivals = random.randint(0, 8)
         drained = random.randint(0, 6)
         queue_depth = max(0, queue_depth + arrivals - drained)
-        job_queue_depth.set(queue_depth)
+        override_depth = overrides["job_queue_depth"]
+        if override_depth is not None:
+            job_queue_depth.set(override_depth)
+        else:
+            job_queue_depth.set(queue_depth)
 
         for _ in range(arrivals):
             jobs_queued_total.inc()
@@ -54,7 +63,10 @@ def _simulate_business_metrics():
             if duration < 2.5:
                 success_count += 1
 
-        if total_count > 0:
+        override_ratio = overrides["webhook_delivery_success_ratio"]
+        if override_ratio is not None:
+            webhook_delivery_success_ratio.set(override_ratio)
+        elif total_count > 0:
             webhook_delivery_success_ratio.set(success_count / total_count)
 
         time.sleep(5)
@@ -64,6 +76,25 @@ def _simulate_business_metrics():
 def start_background_thread():
     thread = threading.Thread(target=_simulate_business_metrics, daemon=True)
     thread.start()
+
+
+@app.post("/admin/override")
+def set_override(
+    queue_depth: float | None = Query(default=None, alias="job_queue_depth"),
+    success_ratio: float | None = Query(default=None, alias="webhook_delivery_success_ratio"),
+) -> dict[str, float | None]:
+    if queue_depth is not None:
+        overrides["job_queue_depth"] = queue_depth
+    if success_ratio is not None:
+        overrides["webhook_delivery_success_ratio"] = success_ratio
+    return overrides
+
+
+@app.post("/admin/reset")
+def reset_overrides() -> dict[str, float | None]:
+    overrides["job_queue_depth"] = None
+    overrides["webhook_delivery_success_ratio"] = None
+    return overrides
 
 
 @app.get("/metrics")
