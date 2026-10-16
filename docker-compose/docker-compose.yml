@@ -45,12 +45,17 @@ services:
     build:
       context: ../target-app
     restart: unless-stopped
+    environment:
+      - OTEL_SERVICE_NAME=target-app
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORTER_OTLP_INSECURE=true
     ports:
         - "18000:8000"
     networks:
       - obs-net
     depends_on:
       - custom-exporter
+      - otel-collector
 
   load-generator:
     image: curlimages/curl:8.8.0
@@ -119,11 +124,36 @@ services:
     depends_on:
       - loki
 
+  tempo:
+    image: grafana/tempo:2.6.1
+    restart: unless-stopped
+    user: "0:0"
+    command: -config.file=/etc/tempo/tempo-config.yml
+    volumes:
+      - ./configs/tempo:/etc/tempo:ro
+      - tempo-data:/data/tempo
+    ports:
+        - "13200:3200"
+    networks:
+      - obs-net
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.109.0
+    restart: unless-stopped
+    command: --config=/etc/otelcol/otel-collector-config.yml
+    volumes:
+      - ./configs/otel-collector:/etc/otelcol:ro
+    networks:
+      - obs-net
+    depends_on:
+      - tempo
+
 volumes:
   prometheus-data:
   grafana-data:
   loki-data:
   promtail-positions:
+  tempo-data:
 
 networks:
   obs-net:

@@ -1,11 +1,29 @@
+import os
 import random
 import time
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+
+def configure_tracing() -> None:
+    resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "target-app")})
+    provider = TracerProvider(resource=resource)
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    trace.set_tracer_provider(provider)
+
+
+configure_tracing()
+
 app = FastAPI(title="target-app")
+FastAPIInstrumentor.instrument_app(app)
 
 http_requests_total = Counter(
     "target_app_http_requests_total",
