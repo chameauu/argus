@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  lint-python:
+    name: Python lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ruff lint
+        run: uvx ruff check .
+      - name: Ruff format check
+        run: uvx ruff format --check .
+
+  validate-configs:
+    name: Validate service configs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Prometheus config (promtool)
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/docker-compose/configs/prometheus:/cfg" \
+            prom/prometheus:v2.53.0 check config /cfg/prometheus.yml
+
+      - name: Validate Prometheus alert rules (if present)
+        run: |
+          shopt -s nullglob
+          files=(alert-rules/*.yml alert-rules/*.yaml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no alert rules yet"; exit 0
+          fi
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/alert-rules:/rules" \
+            prom/prometheus:v2.53.0 check rules "${files[@]#alert-rules/}"
+
+      - name: Validate Alertmanager config (if present)
+        run: |
+          if [ -f docker-compose/configs/alertmanager/alertmanager.yml ]; then
+            docker run --rm --entrypoint amtool \
+              -v "$PWD/docker-compose/configs/alertmanager:/cfg" \
+              prom/alertmanager:v0.27.0 check-config /cfg/alertmanager.yml
+          else
+            echo "no alertmanager config yet"
+          fi
+
+      - name: Validate Loki config
+        run: |
+          docker run --rm -v "$PWD/docker-compose/configs/loki:/etc/loki" \
+            grafana/loki:3.4.2 -config.file=/etc/loki/loki-config.yml -verify-config
+
+      - name: Validate dashboard JSON (if present)
+        run: |
+          shopt -s nullglob
+          files=(dashboards/*.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no dashboards yet"; exit 0
+          fi
+          for f in "${files[@]}"; do
+            echo "checking $f"
+            jq empty "$f"
+          done
+
+      - name: Validate compose file
+        run: cd docker-compose && docker compose config -q
