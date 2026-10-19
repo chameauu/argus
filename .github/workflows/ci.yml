@@ -37,9 +37,13 @@ jobs:
           if [ ${#files[@]} -eq 0 ]; then
             echo "no alert rules yet"; exit 0
           fi
+          targets=()
+          for f in "${files[@]}"; do
+            targets+=("/rules/$(basename "$f")")
+          done
           docker run --rm --entrypoint promtool \
             -v "$PWD/alert-rules:/rules" \
-            prom/prometheus:v2.53.0 check rules "${files[@]#alert-rules/}"
+            prom/prometheus:v2.53.0 check rules "${targets[@]}"
 
       - name: Validate Alertmanager config (if present)
         run: |
