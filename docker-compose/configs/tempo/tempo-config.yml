@@ -14,6 +14,14 @@ distributor:
         http:
           endpoint: "0.0.0.0:4318"
 
+# Retention: keep trace blocks for 7 days, matching Prometheus (7d) and Loki (168h).
+# Without this, Tempo defaults to 336h (14d) and grows unbounded on a local disk.
+compactor:
+  compaction:
+    block_retention: 168h
+    compacted_block_retention: 1h
+    compaction_window: 1h
+
 storage:
   trace:
     backend: local

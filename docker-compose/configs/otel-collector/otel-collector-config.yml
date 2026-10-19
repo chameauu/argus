@@ -17,7 +17,16 @@ exporters:
     tls:
       insecure: true
 
+# The collector image is distroless (no shell, no curl/wget), so a Docker
+# HEALTHCHECK cannot exec inside it. This extension exposes a plain HTTP
+# liveness/readiness endpoint that external probes (and the Stage 6 script)
+# can query instead.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]

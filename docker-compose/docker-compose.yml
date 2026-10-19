@@ -16,6 +16,13 @@ services:
         - "19090:9090"
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 512m
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
@@ -30,6 +37,13 @@ services:
         - "19093:9093"
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 128m
 
   node-exporter:
     image: prom/node-exporter:v1.8.1
@@ -46,6 +60,13 @@ services:
         - "19100:9100"
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9100/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 64m
 
   custom-exporter:
     build:
@@ -55,6 +76,13 @@ services:
         - "19200:9200"
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9200/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 192m
 
   target-app:
     build:
@@ -68,9 +96,18 @@ services:
         - "18000:8000"
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 256m
     depends_on:
-      - custom-exporter
-      - otel-collector
+      custom-exporter:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   load-generator:
     image: curlimages/curl:8.8.0
@@ -78,7 +115,9 @@ services:
     networks:
       - obs-net
     depends_on:
-      - target-app
+      target-app:
+        condition: service_healthy
+    mem_limit: 32m
     entrypoint: >
       sh -c "while true; do
         curl -s -o /dev/null http://target-app:8000/work || true;
@@ -95,6 +134,13 @@ services:
         - "18090:8080"
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 192m
 
   grafana:
     image: grafana/grafana:11.1.0
@@ -111,8 +157,16 @@ services:
         - "13000:3000"
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 384m
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
 
   loki:
     image: grafana/loki:3.4.2
@@ -125,6 +179,13 @@ services:
         - "13100:3100"
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    mem_limit: 768m
 
   promtail:
     image: grafana/promtail:3.4.2
@@ -136,8 +197,16 @@ services:
       - promtail-positions:/tmp
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9080 && printf 'GET /ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 192m
     depends_on:
-      - loki
+      loki:
+        condition: service_healthy
 
   tempo:
     image: grafana/tempo:2.6.1
@@ -151,6 +220,13 @@ services:
         - "13200:3200"
     networks:
       - obs-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3200/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    mem_limit: 512m
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.109.0
@@ -158,10 +234,14 @@ services:
     command: --config=/etc/otelcol/otel-collector-config.yml
     volumes:
       - ./configs/otel-collector:/etc/otelcol:ro
+    ports:
+        - "13133:13133"
     networks:
       - obs-net
+    mem_limit: 256m
     depends_on:
-      - tempo
+      tempo:
+        condition: service_healthy
 
 volumes:
   prometheus-data:
