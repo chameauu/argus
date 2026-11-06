@@ -12,7 +12,7 @@ The project delivers a complete, reproducible local environment for metrics, log
 4. Grafana dashboards and correlation
 5. Alerting and webhooks
 6. Baseline hardening (healthchecks, retention, resource limits)
-7. Advanced SLOs, load testing, chaos validation, and CI
+7. SLOs, load testing, chaos validation, and CI (complete)
 
 ## Quick start
 
@@ -61,6 +61,9 @@ Current implementation includes:
 - Prometheus alert rules + Alertmanager routing to a local webhook receiver
 - Per-alert runbooks under `runbooks/`
 - Healthchecks, memory limits, and 7-day retention on Prometheus, Loki, and Tempo
+- SLOs as code for `/work` (99.5% availability, 95% under 250ms) with multi-window
+  burn-rate alerts and an SLO dashboard
+- k6 load profiles and deterministic chaos experiments that assert alerts fire and clear
 
 ## Operations and troubleshooting
 
@@ -161,6 +164,48 @@ docker volume inspect argus_tempo-data
 ```
 
 Never delete a live Prometheus TSDB or Tempo WAL directory.
+
+## SLOs
+
+Two objectives are defined for `/work` only, because `/error-prone` fails by design:
+
+| Objective | Target | Budget |
+|---|---|---|
+| Availability | 99.5% of requests are non-5xx | 0.5% |
+| Latency | 95% of requests complete under 250ms | 5% |
+
+`alert-rules/slo-rules.yml` records each SLI at 5m/30m/1h/6h and alerts on the standard
+multi-window burn rates: 14.4x over 5m and 1h (critical), 6x over 30m and 6h (warning). The
+`argus-slo` dashboard shows both objectives, the remaining budget, and the burn rate with the
+thresholds drawn in.
+
+## Load testing and chaos
+
+k6 profiles run inside the Compose network, so they resolve `target-app` by name and need no
+published ports:
+
+```bash
+bash k6/run.sh smoke      # 5 requests, sanity check
+bash k6/run.sh steady     # 10 req/s for 2 minutes
+bash k6/run.sh spike      # 2 -> 60 VUs
+bash k6/run.sh soak       # 5 VUs for 30 minutes
+```
+
+Chaos experiments inject a fault, assert the expected alert fires, clear it, and assert
+recovery:
+
+```bash
+bash chaos/queue-backlog.sh          # CustomExporterQueueHigh
+bash chaos/kill-target-app.sh        # TargetAppDown
+bash chaos/slo-availability-burn.sh  # SLOAvailabilityBurnFast
+bash chaos/slo-latency-burn.sh       # SLOLatencyBurnFast
+bash chaos/run-all.sh                # all four, roughly 15 minutes
+```
+
+The SLO experiments inject failures or delay into `/work` through
+`POST /admin/fault?error_rate=0.95` (or `delay_seconds=0.5`) and clear it with
+`POST /admin/fault/reset`. Recovery is asserted on the 5-minute SLI rather than on the alert,
+because a 1-hour window keeps a burn-rate alert pending long after the fault is gone.
 
 ## Engineering approach
 
