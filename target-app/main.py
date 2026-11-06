@@ -3,7 +3,7 @@ import os
 import random
 import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -45,6 +45,11 @@ http_request_duration_seconds = Histogram(
 )
 
 
+# Fault injection state. Chaos runs set this through /admin/fault so SLO burn and
+# alert tests are deterministic instead of waiting for the random error paths.
+_fault = {"error_rate": 0.0, "delay_seconds": 0.0}
+
+
 @app.get("/health")
 def health():
     http_requests_total.labels(endpoint="/health", status="200").inc()
@@ -54,6 +59,13 @@ def health():
 @app.get("/work")
 def work():
     start = time.time()
+    if _fault["delay_seconds"]:
+        time.sleep(_fault["delay_seconds"])
+    if random.random() < _fault["error_rate"]:
+        http_request_duration_seconds.labels(endpoint="/work").observe(time.time() - start)
+        http_requests_total.labels(endpoint="/work", status="500").inc()
+        logger.error("injected failure on /work")
+        raise HTTPException(status_code=500, detail="injected failure")
     time.sleep(random.uniform(0.01, 0.08))
     http_request_duration_seconds.labels(endpoint="/work").observe(time.time() - start)
     http_requests_total.labels(endpoint="/work", status="200").inc()
@@ -86,6 +98,28 @@ def slow():
     http_request_duration_seconds.labels(endpoint="/slow").observe(time.time() - start)
     http_requests_total.labels(endpoint="/slow", status="200").inc()
     return {"result": "ok"}
+
+
+@app.get("/admin/fault")
+def get_fault():
+    return {"fault": dict(_fault)}
+
+
+@app.post("/admin/fault")
+def set_fault(
+    error_rate: float = Query(0.0, ge=0.0, le=1.0),
+    delay_seconds: float = Query(0.0, ge=0.0, le=10.0),
+):
+    _fault["error_rate"] = error_rate
+    _fault["delay_seconds"] = delay_seconds
+    logger.warning("fault injected: error_rate=%.2f delay_seconds=%.2f", error_rate, delay_seconds)
+    return {"fault": dict(_fault)}
+
+
+@app.post("/admin/fault/reset")
+def reset_fault():
+    _fault.update(error_rate=0.0, delay_seconds=0.0)
+    return {"fault": dict(_fault)}
 
 
 @app.get("/metrics")

@@ -1,0 +1,124 @@
+# Service level objectives for the /work endpoint.
+#
+# Availability: 99.5% of /work requests must not return 5xx.
+# Latency:      95% of /work requests must complete in under 250ms.
+#
+# Both objectives are measured over a rolling 28-day window, but the budget is
+# evaluated on the 7 days this stack retains. That gap is deliberate: the SLO is
+# the contract, the dashboard shows what is observable locally.
+#
+# Every SLI is recorded per window so the burn-rate alerts can require a fast and
+# a slow window to agree. One noisy minute cannot page on its own.
+groups:
+  - name: slo-recording
+    interval: 30s
+    rules:
+      - record: slo:availability:ratio5m
+        expr: |
+          sum(rate(target_app_http_requests_total{endpoint="/work",status!~"5.."}[5m]))
+            /
+          sum(rate(target_app_http_requests_total{endpoint="/work"}[5m]))
+
+      - record: slo:availability:ratio30m
+        expr: |
+          sum(rate(target_app_http_requests_total{endpoint="/work",status!~"5.."}[30m]))
+            /
+          sum(rate(target_app_http_requests_total{endpoint="/work"}[30m]))
+
+      - record: slo:availability:ratio1h
+        expr: |
+          sum(rate(target_app_http_requests_total{endpoint="/work",status!~"5.."}[1h]))
+            /
+          sum(rate(target_app_http_requests_total{endpoint="/work"}[1h]))
+
+      - record: slo:availability:ratio6h
+        expr: |
+          sum(rate(target_app_http_requests_total{endpoint="/work",status!~"5.."}[6h]))
+            /
+          sum(rate(target_app_http_requests_total{endpoint="/work"}[6h]))
+
+      - record: slo:latency:ratio5m
+        expr: |
+          sum(rate(target_app_http_request_duration_seconds_bucket{endpoint="/work",le="0.25"}[5m]))
+            /
+          sum(rate(target_app_http_request_duration_seconds_count{endpoint="/work"}[5m]))
+
+      - record: slo:latency:ratio30m
+        expr: |
+          sum(rate(target_app_http_request_duration_seconds_bucket{endpoint="/work",le="0.25"}[30m]))
+            /
+          sum(rate(target_app_http_request_duration_seconds_count{endpoint="/work"}[30m]))
+
+      - record: slo:latency:ratio1h
+        expr: |
+          sum(rate(target_app_http_request_duration_seconds_bucket{endpoint="/work",le="0.25"}[1h]))
+            /
+          sum(rate(target_app_http_request_duration_seconds_count{endpoint="/work"}[1h]))
+
+      - record: slo:latency:ratio6h
+        expr: |
+          sum(rate(target_app_http_request_duration_seconds_bucket{endpoint="/work",le="0.25"}[6h]))
+            /
+          sum(rate(target_app_http_request_duration_seconds_count{endpoint="/work"}[6h]))
+
+  - name: slo-burn-rate
+    rules:
+      # 14.4x burn over one hour consumes 2% of a 28-day budget. That is fast
+      # enough to page, and the 5m window confirms the burn is still happening.
+      - alert: SLOAvailabilityBurnFast
+        expr: |
+          ((1 - slo:availability:ratio5m) / 0.005 > 14.4)
+            and
+          ((1 - slo:availability:ratio1h) / 0.005 > 14.4)
+        for: 2m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "Availability SLO burning budget 14.4x faster than allowed"
+          description: "/work is failing at more than 7.2% over both 5m and 1h windows."
+          runbook: runbooks/SLOAvailabilityBurnFast.md
+
+      # 6x over 6 hours is 5% of the budget. A page at this rate would be noise,
+      # so it routes as a warning and leaves time for an investigation.
+      - alert: SLOAvailabilityBurnSlow
+        expr: |
+          ((1 - slo:availability:ratio30m) / 0.005 > 6)
+            and
+          ((1 - slo:availability:ratio6h) / 0.005 > 6)
+        for: 15m
+        labels:
+          severity: warning
+          component: slo
+        annotations:
+          summary: "Availability SLO budget draining steadily"
+          description: "/work has sustained more than 3% failures across the last 6 hours."
+          runbook: runbooks/SLOAvailabilityBurnSlow.md
+
+      - alert: SLOLatencyBurnFast
+        expr: |
+          ((1 - slo:latency:ratio5m) / 0.05 > 14.4)
+            and
+          ((1 - slo:latency:ratio1h) / 0.05 > 14.4)
+        for: 2m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "Latency SLO burning budget 14.4x faster than allowed"
+          description: "More than 72% of /work requests exceed 250ms over both 5m and 1h windows."
+          runbook: runbooks/SLOLatencyBurnFast.md
+
+      - alert: SLOLatencyBurnSlow
+        expr: |
+          ((1 - slo:latency:ratio30m) / 0.05 > 6)
+            and
+          ((1 - slo:latency:ratio6h) / 0.05 > 6)
+        for: 15m
+        labels:
+          severity: warning
+          component: slo
+        annotations:
+          summary: "Latency SLO budget draining steadily"
+          description: "More than 30% of /work requests exceed 250ms across the last 6 hours."
+          runbook: runbooks/SLOLatencyBurnSlow.md
