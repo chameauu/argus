@@ -48,6 +48,9 @@ docs/
 !runbooks/
 !runbooks/*.md
 
+# The platform contract and its descriptors ARE published — they are the spec
+!platform/**/*.md
+
 # Local verification scripts — kept local, not published
 scripts/
 
