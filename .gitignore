@@ -48,8 +48,7 @@ docs/
 !runbooks/
 !runbooks/*.md
 
-# The platform contract and its descriptors ARE published — they are the spec
-!platform/**/*.md
+# Platform docs are local. Only the contract ships, and it is tracked explicitly.
 
 # Local verification scripts — kept local, not published
 scripts/
