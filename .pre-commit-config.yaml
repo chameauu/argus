@@ -61,9 +61,9 @@ repos:
         pass_filenames: false
         files: ^docker-compose/configs/tempo/.*\.ya?ml$
 
-      - id: promtail-check-syntax
-        name: promtail check-syntax
-        entry: bash -c 'docker run --rm -v "$PWD/docker-compose/configs/promtail:/etc/promtail" grafana/promtail:3.4.2 -config.file=/etc/promtail/promtail-config.yml -check-syntax'
+      - id: alloy-validate-config
+        name: alloy validate-config
+        entry: bash -c 'docker run --rm -v "$PWD/docker-compose/configs/alloy:/etc/alloy:ro" grafana/alloy:v1.22.0 validate /etc/alloy/config.alloy'
         language: system
         pass_filenames: false
-        files: ^docker-compose/configs/promtail/.*\.ya?ml$
+        files: ^docker-compose/configs/alloy/.*\.alloy$

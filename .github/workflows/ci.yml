@@ -70,13 +70,14 @@ jobs:
             echo "no tempo config yet"
           fi
 
-      - name: Validate Promtail config (if present)
+      - name: Validate Alloy config (if present)
         run: |
-          if [ -f docker-compose/configs/promtail/promtail-config.yml ]; then
-            docker run --rm -v "$PWD/docker-compose/configs/promtail:/etc/promtail" \
-              grafana/promtail:3.4.2 -config.file=/etc/promtail/promtail-config.yml -check-syntax
+          if [ -f docker-compose/configs/alloy/config.alloy ]; then
+            docker run --rm -v "$PWD/docker-compose/configs/alloy:/etc/alloy:ro" \
+              grafana/alloy:v1.22.0 validate /etc/alloy/config.alloy
+            echo "alloy config OK"
           else
-            echo "no promtail config yet"
+            echo "no alloy config yet"
           fi
 
       - name: Validate dashboard JSON (if present)

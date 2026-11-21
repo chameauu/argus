@@ -53,7 +53,7 @@ Current implementation includes:
 - Prometheus scrape configuration
 - FastAPI target workload service
 - Custom Python metrics exporter
-- Loki + Promtail log pipeline
+- Loki + Alloy log pipeline
 - Tempo + OpenTelemetry Collector trace pipeline
 - Grafana provisioning for Prometheus, Loki, and Tempo datasources
 - Trace-to-log and trace-to-metric correlation
@@ -142,12 +142,11 @@ and referenced from `rule_files`.
 
 ### Logs are missing from Loki
 
-Promtail is scoped to this Compose project. Confirm the filter label and Promtail's own
-readiness:
+Alloy is scoped to this Compose project. Confirm the filter and Alloy's own readiness:
 
 ```bash
-docker compose logs promtail --tail=50
-curl -s http://localhost:3100/ready
+docker compose logs alloy --tail=50
+curl -s http://localhost:13100/ready
 ```
 
 A container started outside the `argus` Compose project is intentionally not ingested.
