@@ -1,0 +1,31 @@
+name: webhook-receiver
+owner: jmal
+namespace: argus
+environment: local
+
+scrape:
+  port: 8080
+  path: /metrics
+  interval: 15s
+
+health:
+  path: /healthz
+
+slos:
+  availability:
+    # No error status is emitted yet; v1 default selector until one exists.
+    objective: 0.995
+    window: 30d
+    error_selector: 'status=~"5.."'
+  latency:
+    # Pending at drafting time; the app's /metrics now exposes this histogram.
+    objective: 0.95
+    threshold_seconds: 0.5
+    histogram: webhook_received_duration_seconds
+
+routes_allowlist:
+  - /critical
+  - /warning
+  - /received
+
+runbook: runbooks/WebhookDeliveryFailing.md

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Conformance checker for the argus platform contract v1 (phase 0).
 
-Five checks per service, each PASS / FAIL / SKIP with quoted evidence:
-  metrics_reachable, service_label, healthz, otlp_traces, trace_id_log_format
+Eight checks per service, each PASS / FAIL / SKIP with quoted evidence:
+  metrics_reachable, service_label, route_label, series_budget,
+  healthz, otlp_traces, trace_id_log_format, descriptor
 
 Usage:
   python3 platform/contract_check.py \
       --service target-app=http://localhost:18000 \
       --service custom-exporter=http://localhost:19200 \
-      --service webhook-receiver=http://localhost:18090 [--json] [--timeout 5]
+      --service webhook-receiver=http://localhost:18090 [--json] [--timeout 5] \
+      [--prometheus http://localhost:19090] [--services-dir services]
 
 Exit code: 0 when every check is PASS or SKIP, 1 when any check FAILs.
 Standard library only.
@@ -29,16 +31,41 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
 TEMPO_URL = os.environ.get("ARGUS_TEMPO_URL", "http://localhost:13200").rstrip("/")
 LOKI_URL = os.environ.get("ARGUS_LOKI_URL", "http://localhost:13100").rstrip("/")
+DEFAULT_PROMETHEUS_URL = os.environ.get("ARGUS_PROMETHEUS_URL", "http://localhost:19090")
 
-# Runtime/client-library families are exempt from the service label rule.
+# Runtime/client-library families are exempt from the series budget.
 EXEMPT_PREFIXES = ("go_", "python_", "process_", "promhttp_")
+# Prometheus synthesises these per target; metric_relabel_configs cannot label them.
+SYNTHETIC_SERIES = "up|scrape_.*"
 HEALTH_BUDGET_S = 1.0
 SERIES_LIMIT = 500
+ROUTE_VALUE_LIMIT = 50
 TRACE_LOOKBACK_S = 15 * 60
 LOG_LOOKBACK_NS = 15 * 60 * 1_000_000_000
 TRACE_ID_RE = re.compile(r"trace_id=[0-9a-f]{32}")
 SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{(.*)\})?\s+(\S+)(?:\s+\S+)?(?:\s+#.*)?$")
 LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
+RAW_ID_SEGMENT_RE = re.compile(r"[0-9a-fA-F]{32}")
+INT_RE = re.compile(r"[-+]?\d+")
+FLOAT_RE = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?")
+
+_MISSING = object()
+
+DESCRIPTOR_TOP_KEYS = (
+    "name",
+    "owner",
+    "namespace",
+    "environment",
+    "scrape",
+    "health",
+    "slos",
+    "routes_allowlist",
+    "runbook",
+)
+
+
+class YamlError(ValueError):
+    """Raised when a descriptor cannot be parsed by the minimal YAML reader."""
 
 
 @dataclass
@@ -116,18 +143,106 @@ def check_metrics_reachable(base, timeout):
     return Result("metrics_reachable", PASS, evidence), samples
 
 
-def check_service_label(name, samples):
-    app = [(n, labels) for n, labels in samples if not n.startswith(EXEMPT_PREFIXES)]
-    if not app:
-        detail = f"0 app series among {len(samples)} exposed (all are runtime-exempt families)"
+def prometheus_count(prometheus, query, timeout):
+    """Run an instant count query. Return (float or None, error_string or None)."""
+    params = urllib.parse.urlencode({"query": query})
+    status, body, _, error = fetch(f"{prometheus}/api/v1/query?{params}", timeout)
+    if error:
+        return None, f"prometheus unreachable: {error}"
+    if status != 200:
+        return None, f"prometheus query -> HTTP {status}: {body[:100].strip()}"
+    try:
+        payload = json.loads(body)
+        if payload.get("status") != "success":
+            return None, f"prometheus error: {payload.get('error', 'unknown')}"
+        result = payload["data"]["result"]
+        return sum(float(sample["value"][1]) for sample in result), None
+    except (ValueError, KeyError, TypeError) as exc:
+        return None, f"prometheus response unreadable: {type(exc).__name__}"
+
+
+def check_service_label(name, prometheus, timeout):
+    """Prove the scrape-time relabel stamped every application series."""
+    job_total, error = prometheus_count(
+        prometheus, f'count({{job="{name}", __name__!~"{SYNTHETIC_SERIES}"}})', timeout
+    )
+    if error:
+        return Result("service_label", FAIL, error)
+    stamped, error = prometheus_count(
+        prometheus, f'count({{job="{name}", service="{name}"}})', timeout
+    )
+    if error:
+        return Result("service_label", FAIL, error)
+    raw_total, _ = prometheus_count(prometheus, f'count({{job="{name}"}})', timeout)
+
+    if raw_total == 0:
+        detail = f'prometheus has no series for job "{name}" (service is not scraped)'
         return Result("service_label", FAIL, detail)
-    carrying = [(n, labels) for n, labels in app if labels.get("service") == name]
-    total = len(app)
-    evidence = f'{len(carrying)}/{total} app series carry service="{name}"'
-    if len(carrying) != total:
-        missing = sorted({n for n, labels in app if labels.get("service") != name})
-        evidence += f" ({total - len(carrying)} lack it, e.g. {', '.join(missing[:3])})"
-    return Result("service_label", PASS if carrying and len(carrying) == total else FAIL, evidence)
+    synthetic = (raw_total - job_total) if raw_total is not None else 0
+    evidence = (
+        f'prometheus job "{name}": {stamped:g}/{job_total:g} application series carry '
+        f'service="{name}"'
+    )
+    if synthetic > 0:
+        evidence += f" (count({{job}}) = {raw_total:g} incl. {synthetic:g} synthetic up/scrape_*)"
+    ok = job_total > 0 and stamped > 0 and stamped == job_total
+    return Result("service_label", PASS if ok else FAIL, evidence)
+
+
+def looks_like_raw_id(value):
+    """True when any path segment is all digits or a full 32-hex identifier."""
+    for segment in value.split("/"):
+        segment = segment.strip()
+        if segment.isdigit() or RAW_ID_SEGMENT_RE.fullmatch(segment):
+            return True
+    return False
+
+
+def check_route_label(samples):
+    if samples is None:
+        return Result("route_label", FAIL, "GET /metrics unavailable; route label not evaluable")
+
+    label_names = [
+        key
+        for key in ("route", "endpoint")
+        if any("status" in labels and key in labels for _, labels in samples)
+    ]
+    if not label_names:
+        detail = "no request counter carries both a status label and a route/endpoint label"
+        return Result("route_label", FAIL, detail)
+
+    label = label_names[0]
+    series = [(n, labels) for n, labels in samples if "status" in labels and label in labels]
+    values = sorted({labels[label] for _, labels in series})
+    names = sorted({n for n, _ in series})
+    shown = values[:8]
+    evidence = f'label "{label}" on {names[0]}'
+    if len(names) > 1:
+        evidence += f" (+{len(names) - 1} more)"
+    evidence += f": {len(values)} distinct value(s) {', '.join(shown)}"
+    if len(values) > len(shown):
+        evidence += f", … (+{len(values) - len(shown)} more)"
+
+    if len(values) > ROUTE_VALUE_LIMIT:
+        evidence = f"{len(values)} distinct values exceed {ROUTE_VALUE_LIMIT}: {evidence}"
+        return Result("route_label", FAIL, evidence)
+    offenders = [value for value in values if looks_like_raw_id(value)]
+    if offenders:
+        return Result("route_label", FAIL, f"raw-ID route value(s): {', '.join(offenders[:3])}")
+    return Result("route_label", PASS, evidence)
+
+
+def check_series_budget(samples):
+    if samples is None:
+        return Result(
+            "series_budget", FAIL, "GET /metrics unavailable; series budget not evaluable"
+        )
+    series = {(name, tuple(sorted(labels.items()))) for name, labels in samples}
+    app = {entry for entry in series if not entry[0].startswith(EXEMPT_PREFIXES)}
+    exempt = len(series) - len(app)
+    evidence = f"{len(app)} application series (limit {SERIES_LIMIT}), {exempt} runtime-exempt"
+    verdict = PASS if len(app) <= SERIES_LIMIT else FAIL
+    return Result("series_budget", verdict, evidence)
 
 
 def check_healthz(base, timeout):
@@ -198,7 +313,7 @@ def check_trace_id_log_format(name, timeout):
             "trace_id_log_format", FAIL, f"loki query -> 200 but unexpected body: {body[:80]!r}"
         )
 
-    lines = [v[1] for s in streams for v in s.get("values", []) if len(v) > 1]
+    lines = [value[1] for stream in streams for value in stream.get("values", []) if len(value) > 1]
     matched = sum(1 for line in lines if TRACE_ID_RE.search(line))
     if lines:
         evidence = (
@@ -209,22 +324,301 @@ def check_trace_id_log_format(name, timeout):
     return Result("trace_id_log_format", PASS if matched else FAIL, evidence)
 
 
-def run_service(name, base, timeout):
+def _strip_comment(line):
+    out = []
+    quote = None
+    for char in line:
+        if quote:
+            out.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in "\"'":
+            quote = char
+            out.append(char)
+            continue
+        if char == "#" and (not out or out[-1].isspace()):
+            break
+        out.append(char)
+    return "".join(out).rstrip()
+
+
+def _tokenize(text):
+    lines = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        stripped = _strip_comment(raw)
+        if not stripped.strip():
+            continue
+        indent = len(stripped) - len(stripped.lstrip(" "))
+        if "\t" in stripped[: indent + 1]:
+            raise YamlError(f"line {lineno}: tab indentation is not supported")
+        lines.append((indent, stripped.strip(), lineno))
+    return lines
+
+
+def _split_flow(text):
+    parts, depth, quote, start = [], 0, None, 0
+    for index, char in enumerate(text):
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in "\"'":
+            quote = char
+        elif char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _parse_scalar(text, lineno):
+    text = text.strip()
+    if not text:
+        return None
+    if text[0] in "{[":
+        return _parse_flow(text, lineno)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    lowered = text.lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    if lowered in ("null", "~"):
+        return None
+    if INT_RE.fullmatch(text):
+        return int(text)
+    if FLOAT_RE.fullmatch(text):
+        return float(text)
+    return text
+
+
+def _parse_flow(text, lineno):
+    text = text.strip()
+    if text.startswith("{"):
+        if not text.endswith("}"):
+            raise YamlError(f"line {lineno}: unterminated flow mapping")
+        body = text[1:-1].strip()
+        if not body:
+            return {}
+        mapping = {}
+        for part in _split_flow(body):
+            key, sep, value = part.partition(":")
+            if not sep or not key.strip():
+                raise YamlError(f"line {lineno}: malformed flow mapping entry {part!r}")
+            if key.strip() in mapping:
+                raise YamlError(f"line {lineno}: duplicate key {key.strip()!r}")
+            mapping[key.strip()] = _parse_scalar(value, lineno)
+        return mapping
+    if not text.endswith("]"):
+        raise YamlError(f"line {lineno}: unterminated flow sequence")
+    body = text[1:-1].strip()
+    if not body:
+        return []
+    return [_parse_scalar(part, lineno) for part in _split_flow(body)]
+
+
+def _parse_mapping(lines, index, indent):
+    mapping = {}
+    while index < len(lines):
+        line_indent, content, lineno = lines[index]
+        if line_indent < indent:
+            break
+        if line_indent > indent:
+            raise YamlError(f"line {lineno}: unexpected indentation")
+        if content.startswith("-"):
+            break
+        key, sep, rest = content.partition(":")
+        if not sep or not key.strip():
+            raise YamlError(f"line {lineno}: expected 'key: value', got {content!r}")
+        key = key.strip()
+        if key in mapping:
+            raise YamlError(f"line {lineno}: duplicate key {key!r}")
+        index += 1
+        if rest.strip():
+            mapping[key] = _parse_scalar(rest, lineno)
+        elif index < len(lines) and lines[index][0] > indent:
+            mapping[key], index = _parse_block(lines, index, lines[index][0])
+        elif index < len(lines) and lines[index][0] == indent and lines[index][1].startswith("-"):
+            mapping[key], index = _parse_sequence(lines, index, indent)
+        else:
+            mapping[key] = None
+    return mapping, index
+
+
+def _parse_sequence(lines, index, indent):
+    items = []
+    while index < len(lines):
+        line_indent, content, lineno = lines[index]
+        if line_indent < indent:
+            break
+        if line_indent > indent or not content.startswith("-"):
+            raise YamlError(f"line {lineno}: malformed sequence entry {content!r}")
+        rest = content[1:].strip()
+        index += 1
+        if not rest:
+            if index < len(lines) and lines[index][0] > indent:
+                value, index = _parse_block(lines, index, lines[index][0])
+            else:
+                value = None
+        else:
+            value = _parse_scalar(rest, lineno)
+        items.append(value)
+    return items, index
+
+
+def _parse_block(lines, index, indent):
+    if lines[index][1].startswith("-"):
+        return _parse_sequence(lines, index, indent)
+    return _parse_mapping(lines, index, indent)
+
+
+def parse_descriptor(text):
+    lines = _tokenize(text)
+    if not lines:
+        return {}
+    if lines[0][0] != 0:
+        raise YamlError(f"line {lines[0][2]}: top-level keys must not be indented")
+    data, index = _parse_block(lines, 0, 0)
+    if index != len(lines):
+        raise YamlError(f"line {lines[index][2]}: trailing content")
+    return data
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _check_string(problems, mapping, key, path):
+    value = mapping.get(key, _MISSING)
+    if value is _MISSING:
+        problems.append(f"{path}: missing")
+    elif not isinstance(value, str) or not value.strip():
+        problems.append(f"{path}: expected non-empty string")
+    return value
+
+
+def _check_mapping(problems, mapping, key, path):
+    value = mapping.get(key, _MISSING)
+    if value is _MISSING:
+        problems.append(f"{path}: missing")
+        return None
+    if not isinstance(value, dict):
+        problems.append(f"{path}: expected mapping")
+        return None
+    return value
+
+
+def validate_descriptor(data, service_name):
+    problems = []
+    if not isinstance(data, dict):
+        return ["top level: expected mapping"]
+
+    for key in data:
+        if key not in DESCRIPTOR_TOP_KEYS:
+            problems.append(f"{key}: unknown top-level key")
+    for key in DESCRIPTOR_TOP_KEYS:
+        if key not in data:
+            problems.append(f"{key}: missing")
+
+    for key in ("name", "owner", "namespace", "environment", "runbook"):
+        if key in data:
+            _check_string(problems, data, key, key)
+    if isinstance(data.get("name"), str) and data["name"] != service_name:
+        problems.append(f'name: "{data["name"]}" does not match service "{service_name}"')
+
+    scrape = _check_mapping(problems, data, "scrape", "scrape") if "scrape" in data else None
+    if scrape is not None:
+        port = scrape.get("port", _MISSING)
+        if port is _MISSING:
+            problems.append("scrape.port: missing")
+        elif not isinstance(port, int) or isinstance(port, bool):
+            problems.append("scrape.port: expected integer")
+        elif not 1 <= port <= 65535:
+            problems.append(f"scrape.port: {port} outside 1-65535")
+        path = _check_string(problems, scrape, "path", "scrape.path")
+        if isinstance(path, str) and not path.startswith("/"):
+            problems.append("scrape.path: expected a path starting with '/'")
+        _check_string(problems, scrape, "interval", "scrape.interval")
+
+    health = _check_mapping(problems, data, "health", "health") if "health" in data else None
+    if health is not None:
+        path = _check_string(problems, health, "path", "health.path")
+        if isinstance(path, str) and not path.startswith("/"):
+            problems.append("health.path: expected a path starting with '/'")
+
+    slos = _check_mapping(problems, data, "slos", "slos") if "slos" in data else None
+    if slos is not None:
+        availability = _check_mapping(problems, slos, "availability", "slos.availability")
+        if availability is not None:
+            objective = availability.get("objective", _MISSING)
+            if objective is _MISSING:
+                problems.append("slos.availability.objective: missing")
+            elif not _is_number(objective) or not 0 < objective < 1:
+                problems.append("slos.availability.objective: expected number in (0, 1)")
+            _check_string(problems, availability, "window", "slos.availability.window")
+            _check_string(
+                problems, availability, "error_selector", "slos.availability.error_selector"
+            )
+        latency = _check_mapping(problems, slos, "latency", "slos.latency")
+        if latency is not None:
+            objective = latency.get("objective", _MISSING)
+            if objective is _MISSING:
+                problems.append("slos.latency.objective: missing")
+            elif not _is_number(objective) or not 0 < objective < 1:
+                problems.append("slos.latency.objective: expected number in (0, 1)")
+            threshold = latency.get("threshold_seconds", _MISSING)
+            if threshold is _MISSING:
+                problems.append("slos.latency.threshold_seconds: missing")
+            elif not _is_number(threshold) or threshold <= 0:
+                problems.append("slos.latency.threshold_seconds: expected positive number")
+            _check_string(problems, latency, "histogram", "slos.latency.histogram")
+
+    routes = data.get("routes_allowlist", _MISSING)
+    if routes is _MISSING:
+        problems.append("routes_allowlist: missing")
+    elif not isinstance(routes, list):
+        problems.append("routes_allowlist: expected list")
+    else:
+        for position, route in enumerate(routes):
+            if not isinstance(route, str) or not route.strip():
+                problems.append(f"routes_allowlist[{position}]: expected non-empty string")
+    return problems
+
+
+def check_descriptor(name, services_dir):
+    path = os.path.join(services_dir, f"{name}.yaml")
+    if not os.path.isfile(path):
+        return Result("descriptor", FAIL, f"no descriptor: {path}")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = parse_descriptor(handle.read())
+    except (OSError, YamlError) as exc:
+        return Result("descriptor", FAIL, f"{path}: unparseable: {exc}")
+    problems = validate_descriptor(data, name)
+    if problems:
+        evidence = f"{path}: {len(problems)} problem(s): " + "; ".join(problems[:8])
+        if len(problems) > 8:
+            evidence += f"; … (+{len(problems) - 8} more)"
+        return Result("descriptor", FAIL, evidence)
+    port = data["scrape"]["port"]
+    routes = len(data["routes_allowlist"])
+    return Result("descriptor", PASS, f"{path}: schema v1 valid (port {port}, {routes} routes)")
+
+
+def run_service(name, base, timeout, prometheus, services_dir):
     metrics_result, samples = check_metrics_reachable(base, timeout)
     results = [metrics_result]
-    if samples is None:
-        results.append(
-            Result(
-                "service_label",
-                SKIP,
-                "/metrics unavailable or unparseable; label check not evaluable",
-            )
-        )
-    else:
-        results.append(check_service_label(name, samples))
+    results.append(check_service_label(name, prometheus, timeout))
+    results.append(check_route_label(samples))
+    results.append(check_series_budget(samples))
     results.append(check_healthz(base, timeout))
     results.append(check_otlp_traces(name, timeout))
     results.append(check_trace_id_log_format(name, timeout))
+    results.append(check_descriptor(name, services_dir))
     return results
 
 
@@ -285,6 +679,16 @@ def main(argv=None):
     parser.add_argument(
         "--timeout", type=float, default=5.0, help="per-request timeout (default 5)"
     )
+    parser.add_argument(
+        "--prometheus",
+        default=DEFAULT_PROMETHEUS_URL,
+        help=f"Prometheus base URL (default {DEFAULT_PROMETHEUS_URL})",
+    )
+    parser.add_argument(
+        "--services-dir",
+        default="services",
+        help="directory holding <name>.yaml descriptors (default services)",
+    )
     args = parser.parse_args(argv)
 
     bases = {}
@@ -298,10 +702,11 @@ def main(argv=None):
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
 
+    prometheus = args.prometheus.rstrip("/")
     all_results = {}
     for name, base in bases.items():
         try:
-            all_results[name] = run_service(name, base, args.timeout)
+            all_results[name] = run_service(name, base, args.timeout, prometheus, args.services_dir)
         except Exception as exc:  # never traceback on an unexpected failure
             all_results[name] = [Result("internal_error", FAIL, f"{type(exc).__name__}: {exc}")]
 
@@ -313,6 +718,8 @@ def main(argv=None):
         payload = {
             "contract": "v1",
             "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "prometheus": prometheus,
+            "services_dir": args.services_dir,
             "services": {
                 name: {
                     "base_url": bases[name],

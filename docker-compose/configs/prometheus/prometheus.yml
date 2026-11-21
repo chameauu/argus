@@ -14,16 +14,36 @@ scrape_configs:
   - job_name: "prometheus"
     static_configs:
       - targets: ["prometheus:9090"]
+    metric_relabel_configs:
+      - target_label: service
+        replacement: prometheus
 
   - job_name: "node-exporter"
     static_configs:
       - targets: ["node-exporter:9100"]
+    metric_relabel_configs:
+      - target_label: service
+        replacement: node-exporter
 
   - job_name: "custom-exporter"
     static_configs:
       - targets: ["custom-exporter:9200"]
+    metric_relabel_configs:
+      - target_label: service
+        replacement: custom-exporter
 
   - job_name: "target-app"
     metrics_path: /metrics
     static_configs:
       - targets: ["target-app:8000"]
+    metric_relabel_configs:
+      - target_label: service
+        replacement: target-app
+
+  - job_name: "webhook-receiver"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["webhook-receiver:8080"]
+    metric_relabel_configs:
+      - target_label: service
+        replacement: webhook-receiver

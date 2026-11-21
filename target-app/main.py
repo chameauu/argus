@@ -3,7 +3,7 @@ import os
 import random
 import time
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -16,7 +16,13 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 
 
 def configure_tracing() -> None:
-    resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "target-app")})
+    resource = Resource.create(
+        {
+            "service.name": os.getenv("OTEL_SERVICE_NAME", "target-app"),
+            "service.namespace": os.getenv("OTEL_SERVICE_NAMESPACE", "argus"),
+            "deployment.environment": os.getenv("DEPLOYMENT_ENVIRONMENT", "local"),
+        }
+    )
     provider = TracerProvider(resource=resource)
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(provider)
@@ -29,7 +35,6 @@ logger = logging.getLogger("target-app")
 logger.setLevel(logging.INFO)
 
 app = FastAPI(title="target-app")
-FastAPIInstrumentor.instrument_app(app)
 
 http_requests_total = Counter(
     "target_app_http_requests_total",
@@ -48,6 +53,40 @@ http_request_duration_seconds = Histogram(
 # Fault injection state. Chaos runs set this through /admin/fault so SLO burn and
 # alert tests are deterministic instead of waiting for the random error paths.
 _fault = {"error_rate": 0.0, "delay_seconds": 0.0}
+
+
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    """Emit one access line per request, tagged with the active trace id.
+
+    Registered before FastAPIInstrumentor.instrument_app() so the OTel
+    middleware wraps this one; the server span is therefore still active here
+    and LoggingInstrumentor renders trace_id=<32 hex> on the line.
+    """
+    started = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        route = request.scope.get("route")
+        template = getattr(route, "path", None) or request.url.path
+        logger.info(
+            "%s %s %d %.1fms",
+            request.method,
+            template,
+            status,
+            (time.perf_counter() - started) * 1000.0,
+        )
+
+
+FastAPIInstrumentor.instrument_app(app)
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
 
 @app.get("/health")

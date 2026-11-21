@@ -1,0 +1,28 @@
+name: custom-exporter
+owner: jmal
+namespace: argus
+environment: local
+
+scrape:
+  port: 9200
+  path: /metrics
+  interval: 15s
+
+health:
+  path: /healthz
+
+slos:
+  availability:
+    objective: 0.995
+    window: 30d
+    error_selector: 'status="failure"'
+  latency:
+    objective: 0.95
+    threshold_seconds: 0.5
+    histogram: webhook_delivery_duration_seconds
+
+# Request counter exists for v1 conformance only and covers the operational
+# endpoints (/health, /healthz, /metrics); no business routes to list yet.
+routes_allowlist: []
+
+runbook: runbooks/CustomExporterQueueHigh.md

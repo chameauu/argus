@@ -11,4 +11,4 @@ COPY exporter.py .
 
 EXPOSE 9200
 
-CMD ["uvicorn", "exporter:app", "--host", "0.0.0.0", "--port", "9200"]
+CMD ["uvicorn", "exporter:app", "--host", "0.0.0.0", "--port", "9200", "--no-access-log"]
