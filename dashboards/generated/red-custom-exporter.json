@@ -67,7 +67,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(custom_exporter_http_request_duration_seconds_bucket{service=\"custom-exporter\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(webhook_delivery_duration_seconds_bucket{service=\"custom-exporter\"}[$__rate_interval])))",
           "legendFormat": "{{route}}"
         }
       ]

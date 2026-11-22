@@ -561,7 +561,7 @@ def parse_descriptor(text):
 
 
 def _is_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def _check_string(problems, mapping, key, path):
@@ -647,21 +647,25 @@ def validate_descriptor(data, service_name):
                 problems.append("slos.latency.threshold_seconds: missing")
             elif not _is_number(threshold) or threshold <= 0:
                 problems.append("slos.latency.threshold_seconds: expected positive number")
-            _check_string(problems, latency, "histogram", "slos.latency.histogram")
+            # Single source of truth for the latency histogram: the SLI, the RED
+            # rules, the dashboard and the descriptor evidence all read this one
+            # field. `metrics.latency_histogram` is no longer accepted.
+            histogram = _check_string(problems, latency, "histogram", "slos.latency.histogram")
+            if isinstance(histogram, str) and not METRIC_NAME_RE.fullmatch(histogram):
+                problems.append("slos.latency.histogram: not a valid Prometheus metric name")
 
     metrics = data.get("metrics", _MISSING)
     if metrics is not _MISSING:
         if not isinstance(metrics, dict):
             problems.append("metrics: expected mapping")
         else:
-            allowed = ("requests_total", "latency_histogram", "route_label")
+            allowed = ("requests_total", "route_label")
             for key in metrics:
                 if key not in allowed:
                     problems.append(f"metrics.{key}: unknown key")
-            for key in ("requests_total", "latency_histogram"):
-                value = _check_string(problems, metrics, key, f"metrics.{key}")
-                if isinstance(value, str) and not METRIC_NAME_RE.fullmatch(value):
-                    problems.append(f"metrics.{key}: not a valid Prometheus metric name")
+            value = _check_string(problems, metrics, "requests_total", "metrics.requests_total")
+            if isinstance(value, str) and not METRIC_NAME_RE.fullmatch(value):
+                problems.append("metrics.requests_total: not a valid Prometheus metric name")
             route_label = metrics.get("route_label", "route")
             if route_label not in ROUTE_LABELS:
                 problems.append(f"metrics.route_label: expected one of {', '.join(ROUTE_LABELS)}")
@@ -675,6 +679,11 @@ def validate_descriptor(data, service_name):
         for position, route in enumerate(routes):
             if not isinstance(route, str) or not route.strip():
                 problems.append(f"routes_allowlist[{position}]: expected non-empty string")
+        # A latency SLO with no allowlist aggregates every route, including
+        # scrape and probe traffic: the descriptor would be silent about what it
+        # measures. Reject it instead of generating a false-green SLI.
+        if not routes and isinstance(slos, dict) and "latency" in slos:
+            problems.append("routes_allowlist: must not be empty when slos.latency is declared")
     return problems
 
 
@@ -704,7 +713,8 @@ def check_descriptor(name, services_dir, samples=None):
 
     metrics = data.get("metrics")
     if isinstance(metrics, dict):
-        declared = [metrics["requests_total"], metrics["latency_histogram"]]
+        histogram = data["slos"]["latency"]["histogram"]
+        declared = [metrics["requests_total"], histogram]
         if samples is None:
             evidence += "; metrics declared but /metrics unavailable to verify"
         else:
@@ -715,7 +725,7 @@ def check_descriptor(name, services_dir, samples=None):
                 return Result("descriptor", FAIL, evidence)
             evidence += (
                 f"; metrics: requests_total={metrics['requests_total']} "
-                f"latency_histogram={metrics['latency_histogram']} "
+                f"latency_histogram={histogram} "
                 f"({len(declared)}/{len(declared)} observed)"
             )
 

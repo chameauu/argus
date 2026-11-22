@@ -4,14 +4,14 @@ _Generated from `services/custom-exporter.yaml` by `platform/generate.py`. Do no
 
 ## What it is
 `custom-exporter` (owner `jmal`, namespace `argus`, environment `local`) is an HTTP
-service scraped at `custom-exporter:9200/metrics` every 15s. It exposes 0 route(s):
-none.
+service scraped at `custom-exporter:9200/metrics` every 15s. Its latency SLO covers
+1 route(s): `/webhook-delivery`.
 
 ## SLOs
 - **Availability:** 99.5% of requests must not fail over
   30d (`status=~"5.."`).
 - **Latency:** 95% of requests must complete in under 0.5 s.
-- **Metrics:** counter `custom_exporter_http_requests_total`, histogram `custom_exporter_http_request_duration_seconds` (label `route`).
+- **Metrics:** counter `custom_exporter_http_requests_total`, histogram `webhook_delivery_duration_seconds` (label `route`).
 
 ## First three diagnostic steps
 1. Open the generated dashboard: [dashboards/generated/red-custom-exporter.json](../../dashboards/generated/red-custom-exporter.json).

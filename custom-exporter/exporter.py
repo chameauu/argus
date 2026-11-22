@@ -28,9 +28,7 @@ def configure_tracing() -> None:
     provider.add_span_processor(
         BatchSpanProcessor(
             OTLPSpanExporter(
-                endpoint=os.getenv(
-                    "OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"
-                ),
+                endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"),
                 insecure=True,
             )
         )
@@ -66,6 +64,7 @@ jobs_processed_total = Counter(
 webhook_delivery_duration_seconds = Histogram(
     "webhook_delivery_duration_seconds",
     "Webhook delivery duration",
+    ["route"],
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5),
 )
 
@@ -90,6 +89,9 @@ QUEUE_MIN = 30.0
 QUEUE_MAX = 70.0
 QUEUE_REVERSION = 0.25
 SUCCESS_RATIO_WINDOW = 200
+# Route label for the outbound delivery histogram. The descriptor allowlists this
+# value so the generated latency SLO measures deliveries, not scrape traffic.
+DELIVERY_ROUTE = "/webhook-delivery"
 
 
 def _simulate_business_metrics():
@@ -126,7 +128,7 @@ def _simulate_business_metrics():
         # tight healthy band (~0.83) and reacts to a real delivery regression.
         for _ in range(random.randint(1, 5)):
             duration = random.uniform(0.05, 3.0)
-            webhook_delivery_duration_seconds.observe(duration)
+            webhook_delivery_duration_seconds.labels(route=DELIVERY_ROUTE).observe(duration)
             recent_deliveries.append(duration < 2.5)
 
         override_ratio = overrides["webhook_delivery_success_ratio"]

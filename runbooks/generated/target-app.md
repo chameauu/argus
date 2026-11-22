@@ -4,8 +4,8 @@ _Generated from `services/target-app.yaml` by `platform/generate.py`. Do not edi
 
 ## What it is
 `target-app` (owner `jmal`, namespace `argus`, environment `local`) is an HTTP
-service scraped at `target-app:8000/metrics` every 15s. It exposes 3 route(s):
-`/work`, `/slow`, `/error-prone`.
+service scraped at `target-app:8000/metrics` every 15s. Its latency SLO covers
+3 route(s): `/work`, `/slow`, `/error-prone`.
 
 ## SLOs
 - **Availability:** 99.5% of requests must not fail over

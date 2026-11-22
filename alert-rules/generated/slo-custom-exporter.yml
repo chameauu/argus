@@ -247,9 +247,9 @@ groups:
   - record: slo:sli_error:ratio_rate5m
     expr: |-
       (1 - (
-        sum(rate(custom_exporter_http_request_duration_seconds_bucket{service="custom-exporter",le="0.5"}[5m]))
+        sum(rate(webhook_delivery_duration_seconds_bucket{service="custom-exporter",route=~"/webhook-delivery",le="0.5"}[5m]))
         /
-        sum(rate(custom_exporter_http_request_duration_seconds_count{service="custom-exporter"}[5m]))
+        sum(rate(webhook_delivery_duration_seconds_count{service="custom-exporter",route=~"/webhook-delivery"}[5m]))
       )
       )
     labels:
@@ -263,9 +263,9 @@ groups:
   - record: slo:sli_error:ratio_rate30m
     expr: |-
       (1 - (
-        sum(rate(custom_exporter_http_request_duration_seconds_bucket{service="custom-exporter",le="0.5"}[30m]))
+        sum(rate(webhook_delivery_duration_seconds_bucket{service="custom-exporter",route=~"/webhook-delivery",le="0.5"}[30m]))
         /
-        sum(rate(custom_exporter_http_request_duration_seconds_count{service="custom-exporter"}[30m]))
+        sum(rate(webhook_delivery_duration_seconds_count{service="custom-exporter",route=~"/webhook-delivery"}[30m]))
       )
       )
     labels:
@@ -279,9 +279,9 @@ groups:
   - record: slo:sli_error:ratio_rate1h
     expr: |-
       (1 - (
-        sum(rate(custom_exporter_http_request_duration_seconds_bucket{service="custom-exporter",le="0.5"}[1h]))
+        sum(rate(webhook_delivery_duration_seconds_bucket{service="custom-exporter",route=~"/webhook-delivery",le="0.5"}[1h]))
         /
-        sum(rate(custom_exporter_http_request_duration_seconds_count{service="custom-exporter"}[1h]))
+        sum(rate(webhook_delivery_duration_seconds_count{service="custom-exporter",route=~"/webhook-delivery"}[1h]))
       )
       )
     labels:
@@ -295,9 +295,9 @@ groups:
   - record: slo:sli_error:ratio_rate2h
     expr: |-
       (1 - (
-        sum(rate(custom_exporter_http_request_duration_seconds_bucket{service="custom-exporter",le="0.5"}[2h]))
+        sum(rate(webhook_delivery_duration_seconds_bucket{service="custom-exporter",route=~"/webhook-delivery",le="0.5"}[2h]))
         /
-        sum(rate(custom_exporter_http_request_duration_seconds_count{service="custom-exporter"}[2h]))
+        sum(rate(webhook_delivery_duration_seconds_count{service="custom-exporter",route=~"/webhook-delivery"}[2h]))
       )
       )
     labels:
@@ -311,9 +311,9 @@ groups:
   - record: slo:sli_error:ratio_rate6h
     expr: |-
       (1 - (
-        sum(rate(custom_exporter_http_request_duration_seconds_bucket{service="custom-exporter",le="0.5"}[6h]))
+        sum(rate(webhook_delivery_duration_seconds_bucket{service="custom-exporter",route=~"/webhook-delivery",le="0.5"}[6h]))
         /
-        sum(rate(custom_exporter_http_request_duration_seconds_count{service="custom-exporter"}[6h]))
+        sum(rate(webhook_delivery_duration_seconds_count{service="custom-exporter",route=~"/webhook-delivery"}[6h]))
       )
       )
     labels:
@@ -327,9 +327,9 @@ groups:
   - record: slo:sli_error:ratio_rate1d
     expr: |-
       (1 - (
-        sum(rate(custom_exporter_http_request_duration_seconds_bucket{service="custom-exporter",le="0.5"}[1d]))
+        sum(rate(webhook_delivery_duration_seconds_bucket{service="custom-exporter",route=~"/webhook-delivery",le="0.5"}[1d]))
         /
-        sum(rate(custom_exporter_http_request_duration_seconds_count{service="custom-exporter"}[1d]))
+        sum(rate(webhook_delivery_duration_seconds_count{service="custom-exporter",route=~"/webhook-delivery"}[1d]))
       )
       )
     labels:
@@ -343,9 +343,9 @@ groups:
   - record: slo:sli_error:ratio_rate3d
     expr: |-
       (1 - (
-        sum(rate(custom_exporter_http_request_duration_seconds_bucket{service="custom-exporter",le="0.5"}[3d]))
+        sum(rate(webhook_delivery_duration_seconds_bucket{service="custom-exporter",route=~"/webhook-delivery",le="0.5"}[3d]))
         /
-        sum(rate(custom_exporter_http_request_duration_seconds_count{service="custom-exporter"}[3d]))
+        sum(rate(webhook_delivery_duration_seconds_count{service="custom-exporter",route=~"/webhook-delivery"}[3d]))
       )
       )
     labels:

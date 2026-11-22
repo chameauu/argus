@@ -23,7 +23,6 @@ slos:
 
 metrics:
   requests_total: target_app_http_requests_total
-  latency_histogram: target_app_http_request_duration_seconds
   route_label: endpoint
 
 routes_allowlist:

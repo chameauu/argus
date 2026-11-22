@@ -35,6 +35,8 @@ slos:
 
   # Latency: a raw ratio because feeding an `le` bucket to `events` would invert
   # the SLI. error_ratio = 1 - (requests faster than the threshold / all requests).
+  # Both sides restrict to routes_allowlist: without it the SLI would also count
+  # scrape and health-check traffic the descriptor never claimed to measure.
   - name: "latency"
     objective: $latency_objective_pct
     description: "$name must serve $latency_objective_pct% of requests in under $threshold_seconds s over $availability_window."
@@ -42,9 +44,9 @@ slos:
       raw:
         error_ratio_query: |
           1 - (
-            sum(rate(${latency_histogram}_bucket{service="$name",le="$threshold_seconds"}[{{.window}}]))
+            sum(rate(${latency_histogram}_bucket{service="$name",$route_label=~"$routes_regex",le="$threshold_seconds"}[{{.window}}]))
             /
-            sum(rate(${latency_histogram}_count{service="$name"}[{{.window}}]))
+            sum(rate(${latency_histogram}_count{service="$name",$route_label=~"$routes_regex"}[{{.window}}]))
           )
     alerting:
       name: "$latency_slo_alert"

@@ -34,7 +34,7 @@ groups:
           histogram_quantile(
             0.99,
             sum by (le, route) (
-              rate(custom_exporter_http_request_duration_seconds_bucket{service="custom-exporter"}[5m])
+              rate(webhook_delivery_duration_seconds_bucket{service="custom-exporter"}[5m])
             )
           ) > 0.5
         for: 5m

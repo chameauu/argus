@@ -67,3 +67,36 @@ repos:
         language: system
         pass_filenames: false
         files: ^docker-compose/configs/alloy/.*\.alloy$
+
+      # The generator owns alert-rules/generated, dashboards/generated and
+      # runbooks/generated, so drift includes orphaned artefacts from a deleted
+      # descriptor. Note: --check shells out to Docker for Sloth and therefore
+      # needs a container runtime.
+      - id: platform-generate-check
+        name: generate --check (no drift, no orphans; needs Docker for Sloth)
+        entry: python3 platform/generate.py --check
+        language: system
+        pass_filenames: false
+        files: ^(services/.*\.ya?ml|platform/.*|alert-rules/generated/.*|dashboards/generated/.*|runbooks/generated/.*)$
+
+      # Offline gate; fails if a generated SLO expression no longer matches the
+      # synthetic series in platform/tests. Needs Docker, not the running stack.
+      - id: platform-rule-tests
+        name: promtool test rules (generated SLO rules)
+        entry: bash platform/test_rules.sh
+        language: system
+        pass_filenames: false
+        files: ^(alert-rules/generated/.*|platform/tests/.*|platform/templates/.*)$
+
+      # Live gate: needs the demo stack up (docker compose up -d --build).
+      - id: platform-contract-demo
+        name: contract v1 on the three demo services (needs stack up)
+        entry: >-
+          python3 platform/contract_check.py
+          --service target-app=http://localhost:18000
+          --service custom-exporter=http://localhost:19200
+          --service webhook-receiver=http://localhost:18090
+          --prometheus http://localhost:19090
+        language: system
+        pass_filenames: false
+        files: ^(services/.*\.ya?ml|platform/.*|docker-compose/configs/prometheus/.*)$

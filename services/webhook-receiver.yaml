@@ -26,12 +26,13 @@ slos:
 
 metrics:
   requests_total: webhook_received_total
-  latency_histogram: webhook_received_duration_seconds
   route_label: route
 
 routes_allowlist:
-  - /critical
-  - /warning
-  - /received
+  # These are the `route` label values emitted by webhook_received_total and
+  # webhook_received_duration_seconds (not HTTP paths). The latency SLI filters
+  # on them, so they must match the label values exactly.
+  - critical
+  - warning
 
 runbook: runbooks/WebhookDeliveryFailing.md

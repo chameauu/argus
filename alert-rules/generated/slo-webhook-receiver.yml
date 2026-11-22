@@ -247,9 +247,9 @@ groups:
   - record: slo:sli_error:ratio_rate5m
     expr: |-
       (1 - (
-        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",le="0.5"}[5m]))
+        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",route=~"critical|warning",le="0.5"}[5m]))
         /
-        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver"}[5m]))
+        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver",route=~"critical|warning"}[5m]))
       )
       )
     labels:
@@ -263,9 +263,9 @@ groups:
   - record: slo:sli_error:ratio_rate30m
     expr: |-
       (1 - (
-        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",le="0.5"}[30m]))
+        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",route=~"critical|warning",le="0.5"}[30m]))
         /
-        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver"}[30m]))
+        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver",route=~"critical|warning"}[30m]))
       )
       )
     labels:
@@ -279,9 +279,9 @@ groups:
   - record: slo:sli_error:ratio_rate1h
     expr: |-
       (1 - (
-        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",le="0.5"}[1h]))
+        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",route=~"critical|warning",le="0.5"}[1h]))
         /
-        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver"}[1h]))
+        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver",route=~"critical|warning"}[1h]))
       )
       )
     labels:
@@ -295,9 +295,9 @@ groups:
   - record: slo:sli_error:ratio_rate2h
     expr: |-
       (1 - (
-        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",le="0.5"}[2h]))
+        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",route=~"critical|warning",le="0.5"}[2h]))
         /
-        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver"}[2h]))
+        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver",route=~"critical|warning"}[2h]))
       )
       )
     labels:
@@ -311,9 +311,9 @@ groups:
   - record: slo:sli_error:ratio_rate6h
     expr: |-
       (1 - (
-        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",le="0.5"}[6h]))
+        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",route=~"critical|warning",le="0.5"}[6h]))
         /
-        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver"}[6h]))
+        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver",route=~"critical|warning"}[6h]))
       )
       )
     labels:
@@ -327,9 +327,9 @@ groups:
   - record: slo:sli_error:ratio_rate1d
     expr: |-
       (1 - (
-        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",le="0.5"}[1d]))
+        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",route=~"critical|warning",le="0.5"}[1d]))
         /
-        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver"}[1d]))
+        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver",route=~"critical|warning"}[1d]))
       )
       )
     labels:
@@ -343,9 +343,9 @@ groups:
   - record: slo:sli_error:ratio_rate3d
     expr: |-
       (1 - (
-        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",le="0.5"}[3d]))
+        sum(rate(webhook_received_duration_seconds_bucket{service="webhook-receiver",route=~"critical|warning",le="0.5"}[3d]))
         /
-        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver"}[3d]))
+        sum(rate(webhook_received_duration_seconds_count{service="webhook-receiver",route=~"critical|warning"}[3d]))
       )
       )
     labels:

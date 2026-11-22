@@ -1,0 +1,76 @@
+# Offline unit tests for the generated latency SLI and its route allowlist.
+#
+# Run inside the pinned Prometheus image (see platform/test_rules.sh):
+#   promtool test rules platform/tests/latency_route_test.yml
+#
+# Each case targets a recording rule that is only produced when the allowlisted
+# route selector matches. A disallowed route must produce no SLI series at all;
+# if the route filter were dropped, the same input would produce a 0.5 ratio and
+# the empty-result assertions below would fail.
+rule_files:
+  - ../../alert-rules/generated/slo-target-app.yml
+  - ../../alert-rules/generated/slo-custom-exporter.yml
+
+evaluation_interval: 1m
+
+tests:
+  # target-app: /admin is not in routes_allowlist (/work, /slow, /error-prone).
+  # Only slow traffic on /admin exists, so an unfiltered SLI would read 0.5.
+  - interval: 1m
+    input_series:
+      - series: 'target_app_http_request_duration_seconds_count{service="target-app",endpoint="/admin"}'
+        values: '0+60x10'
+      - series: 'target_app_http_request_duration_seconds_bucket{service="target-app",endpoint="/admin",le="0.5"}'
+        values: '0+0x10'
+    promql_expr_test:
+      - expr: sum(slo:sli_error:ratio_rate5m{sloth_id="target-app-latency"})
+        eval_time: 10m
+        exp_samples: []
+
+  # target-app: allowlisted /work is entirely fast while disallowed /admin is
+  # entirely slow. The filtered SLI must be 0, not 0.5.
+  - interval: 1m
+    input_series:
+      - series: 'target_app_http_request_duration_seconds_count{service="target-app",endpoint="/work"}'
+        values: '0+60x10'
+      - series: 'target_app_http_request_duration_seconds_bucket{service="target-app",endpoint="/work",le="0.5"}'
+        values: '0+60x10'
+      - series: 'target_app_http_request_duration_seconds_count{service="target-app",endpoint="/admin"}'
+        values: '0+60x10'
+      - series: 'target_app_http_request_duration_seconds_bucket{service="target-app",endpoint="/admin",le="0.5"}'
+        values: '0+0x10'
+    promql_expr_test:
+      - expr: sum(slo:sli_error:ratio_rate5m{sloth_id="target-app-latency"})
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+
+  # custom-exporter: its latency SLO measures /webhook-delivery only. Scrape
+  # traffic on /metrics must not create an SLI series; if it did, the value
+  # would be 0.5 because every /metrics observation is slow.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_delivery_duration_seconds_count{service="custom-exporter",route="/metrics"}'
+        values: '0+60x10'
+      - series: 'webhook_delivery_duration_seconds_bucket{service="custom-exporter",route="/metrics",le="0.5"}'
+        values: '0+0x10'
+    promql_expr_test:
+      - expr: sum(slo:sli_error:ratio_rate5m{sloth_id="custom-exporter-latency"})
+        eval_time: 10m
+        exp_samples: []
+
+  # custom-exporter: the allowlisted delivery route is counted, and slow
+  # deliveries read as a 0.5 error ratio.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_delivery_duration_seconds_count{service="custom-exporter",route="/webhook-delivery"}'
+        values: '0+60x10'
+      - series: 'webhook_delivery_duration_seconds_bucket{service="custom-exporter",route="/webhook-delivery",le="0.5"}'
+        values: '0+30x10'
+    promql_expr_test:
+      - expr: sum(slo:sli_error:ratio_rate5m{sloth_id="custom-exporter-latency"})
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 0.5

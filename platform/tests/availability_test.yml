@@ -1,0 +1,69 @@
+# Offline unit tests for the generated availability burn-rate alert.
+#
+# Run inside the pinned Prometheus image (see platform/test_rules.sh):
+#   promtool test rules platform/tests/availability_test.yml
+#
+# The synthetic counters drive target-app's request rate at 100/min with 10%
+# errors for the first hour, then errors stop. The first case proves the burn
+# alert fires; the second proves it clears once every burn window is clean.
+rule_files:
+  - ../../alert-rules/generated/slo-target-app.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 10% errors = 0.1 error ratio, above both the 14.4x (0.072) page threshold
+  # and the 3x/1x ticket thresholds, for long enough to fill the 1h window.
+  - interval: 1m
+    input_series:
+      - series: 'target_app_http_requests_total{service="target-app",status="200"}'
+        values: '0+90x130'
+      - series: 'target_app_http_requests_total{service="target-app",status="500"}'
+        values: '0+10x130'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: TargetAppAvailabilityBurnRate
+        exp_alerts:
+          - exp_labels:
+              environment: local
+              namespace: argus
+              owner: jmal
+              runbook: runbooks/generated/target-app.md
+              service: target-app
+              severity: critical
+              sloth_id: target-app-availability
+              sloth_service: target-app
+              sloth_severity: page
+              sloth_slo: availability
+              sloth_window: 5m
+            exp_annotations:
+              summary: target-app availability SLO error budget burn rate is over expected.
+              title: (page) target-app availability SLO error budget burn rate is too fast.
+          - exp_labels:
+              environment: local
+              namespace: argus
+              owner: jmal
+              runbook: runbooks/generated/target-app.md
+              service: target-app
+              severity: warning
+              sloth_id: target-app-availability
+              sloth_service: target-app
+              sloth_severity: ticket
+              sloth_slo: availability
+              sloth_window: 2h
+            exp_annotations:
+              summary: target-app availability SLO error budget burn rate is over expected.
+              title: (ticket) target-app availability SLO error budget burn rate is too fast.
+
+  # Errors stop at t=60m. By t=5060m the last error increment is 5000m old,
+  # outside the longest burn window (3d = 4320m), so no burn alert may fire.
+  - interval: 1m
+    input_series:
+      - series: 'target_app_http_requests_total{service="target-app",status="200"}'
+        values: '0+90x5060'
+      - series: 'target_app_http_requests_total{service="target-app",status="500"}'
+        values: '0+10x60 600+0x4999'
+    alert_rule_test:
+      - eval_time: 5060m
+        alertname: TargetAppAvailabilityBurnRate
+        exp_alerts: []

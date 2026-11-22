@@ -94,3 +94,63 @@ jobs:
 
       - name: Validate compose file
         run: cd docker-compose && docker compose config -q
+
+  platform-gates:
+    name: Platform gates (generator, contract, rule tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Note: --check shells out to Docker for Sloth (the SLO rule renderer), so
+      # this step needs a container runtime. GitHub-hosted runners provide one.
+      - name: Generated artefacts match descriptors (no drift, no orphans)
+        run: python3 platform/generate.py --check
+
+      # Offline gate: promtool test rules over alert-rules/generated.
+      - name: Prometheus rule unit tests
+        run: bash platform/test_rules.sh
+
+      - name: Start the demo stack for the live contract check
+        run: docker compose -f docker-compose/docker-compose.yml up -d --build
+
+      - name: Wait for the demo stack
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:19090/-/ready >/dev/null \
+               && curl -fsS http://localhost:18000/healthz >/dev/null \
+               && curl -fsS http://localhost:19200/healthz >/dev/null \
+               && curl -fsS http://localhost:18090/healthz >/dev/null; then
+              echo "stack ready after $((i * 10))s"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "stack did not become ready" >&2
+          docker compose -f docker-compose/docker-compose.yml ps >&2
+          exit 1
+
+      # Traces and logs need a few scrape intervals to appear in Tempo/Loki, so
+      # retry before declaring the contract failed.
+      - name: Contract v1 against the three demo services
+        run: |
+          for i in $(seq 1 10); do
+            if python3 platform/contract_check.py \
+              --service target-app=http://localhost:18000 \
+              --service custom-exporter=http://localhost:19200 \
+              --service webhook-receiver=http://localhost:18090 \
+              --prometheus http://localhost:19090; then
+              exit 0
+            fi
+            echo "contract attempt $i failed; retrying in 30s" >&2
+            sleep 30
+          done
+          exit 1
+
+      - name: Stop the demo stack
+        if: always()
+        run: docker compose -f docker-compose/docker-compose.yml down -v

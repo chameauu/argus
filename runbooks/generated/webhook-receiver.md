@@ -4,8 +4,8 @@ _Generated from `services/webhook-receiver.yaml` by `platform/generate.py`. Do n
 
 ## What it is
 `webhook-receiver` (owner `jmal`, namespace `argus`, environment `local`) is an HTTP
-service scraped at `webhook-receiver:8080/metrics` every 15s. It exposes 3 route(s):
-`/critical`, `/warning`, `/received`.
+service scraped at `webhook-receiver:8080/metrics` every 15s. Its latency SLO covers
+2 route(s): `critical`, `warning`.
 
 ## SLOs
 - **Availability:** 99.5% of requests must not fail over

@@ -247,9 +247,9 @@ groups:
   - record: slo:sli_error:ratio_rate5m
     expr: |-
       (1 - (
-        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",le="0.5"}[5m]))
+        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",endpoint=~"/work|/slow|/error-prone",le="0.5"}[5m]))
         /
-        sum(rate(target_app_http_request_duration_seconds_count{service="target-app"}[5m]))
+        sum(rate(target_app_http_request_duration_seconds_count{service="target-app",endpoint=~"/work|/slow|/error-prone"}[5m]))
       )
       )
     labels:
@@ -263,9 +263,9 @@ groups:
   - record: slo:sli_error:ratio_rate30m
     expr: |-
       (1 - (
-        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",le="0.5"}[30m]))
+        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",endpoint=~"/work|/slow|/error-prone",le="0.5"}[30m]))
         /
-        sum(rate(target_app_http_request_duration_seconds_count{service="target-app"}[30m]))
+        sum(rate(target_app_http_request_duration_seconds_count{service="target-app",endpoint=~"/work|/slow|/error-prone"}[30m]))
       )
       )
     labels:
@@ -279,9 +279,9 @@ groups:
   - record: slo:sli_error:ratio_rate1h
     expr: |-
       (1 - (
-        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",le="0.5"}[1h]))
+        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",endpoint=~"/work|/slow|/error-prone",le="0.5"}[1h]))
         /
-        sum(rate(target_app_http_request_duration_seconds_count{service="target-app"}[1h]))
+        sum(rate(target_app_http_request_duration_seconds_count{service="target-app",endpoint=~"/work|/slow|/error-prone"}[1h]))
       )
       )
     labels:
@@ -295,9 +295,9 @@ groups:
   - record: slo:sli_error:ratio_rate2h
     expr: |-
       (1 - (
-        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",le="0.5"}[2h]))
+        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",endpoint=~"/work|/slow|/error-prone",le="0.5"}[2h]))
         /
-        sum(rate(target_app_http_request_duration_seconds_count{service="target-app"}[2h]))
+        sum(rate(target_app_http_request_duration_seconds_count{service="target-app",endpoint=~"/work|/slow|/error-prone"}[2h]))
       )
       )
     labels:
@@ -311,9 +311,9 @@ groups:
   - record: slo:sli_error:ratio_rate6h
     expr: |-
       (1 - (
-        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",le="0.5"}[6h]))
+        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",endpoint=~"/work|/slow|/error-prone",le="0.5"}[6h]))
         /
-        sum(rate(target_app_http_request_duration_seconds_count{service="target-app"}[6h]))
+        sum(rate(target_app_http_request_duration_seconds_count{service="target-app",endpoint=~"/work|/slow|/error-prone"}[6h]))
       )
       )
     labels:
@@ -327,9 +327,9 @@ groups:
   - record: slo:sli_error:ratio_rate1d
     expr: |-
       (1 - (
-        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",le="0.5"}[1d]))
+        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",endpoint=~"/work|/slow|/error-prone",le="0.5"}[1d]))
         /
-        sum(rate(target_app_http_request_duration_seconds_count{service="target-app"}[1d]))
+        sum(rate(target_app_http_request_duration_seconds_count{service="target-app",endpoint=~"/work|/slow|/error-prone"}[1d]))
       )
       )
     labels:
@@ -343,9 +343,9 @@ groups:
   - record: slo:sli_error:ratio_rate3d
     expr: |-
       (1 - (
-        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",le="0.5"}[3d]))
+        sum(rate(target_app_http_request_duration_seconds_bucket{service="target-app",endpoint=~"/work|/slow|/error-prone",le="0.5"}[3d]))
         /
-        sum(rate(target_app_http_request_duration_seconds_count{service="target-app"}[3d]))
+        sum(rate(target_app_http_request_duration_seconds_count{service="target-app",endpoint=~"/work|/slow|/error-prone"}[3d]))
       )
       )
     labels:
