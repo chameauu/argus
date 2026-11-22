@@ -21,6 +21,11 @@ slos:
     threshold_seconds: 0.5
     histogram: webhook_delivery_duration_seconds
 
+metrics:
+  requests_total: custom_exporter_http_requests_total
+  latency_histogram: custom_exporter_http_request_duration_seconds
+  route_label: route
+
 # Request counter exists for v1 conformance only and covers the operational
 # endpoints (/health, /healthz, /metrics); no business routes to list yet.
 routes_allowlist: []

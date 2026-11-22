@@ -1,0 +1,24 @@
+# Runbook: $name
+
+_Generated from `services/$name.yaml` by `platform/generate.py`. Do not edit by hand._
+
+## What it is
+`$name` (owner `$owner`, namespace `$namespace`, environment `$environment`) is an HTTP
+service scraped at `$target$metrics_path` every $interval. It exposes $route_count route(s):
+$routes.
+
+## SLOs
+- **Availability:** $availability_objective of requests must not fail over
+  $availability_window (`$error_selector`).
+- **Latency:** $latency_objective of requests must complete in under $threshold s.
+- **Metrics:** counter `$requests_metric`, histogram `$latency_metric` (label `$route_label`).
+
+## First three diagnostic steps
+1. Open the generated dashboard: [dashboards/generated/$name.json](../../dashboards/generated/$name.json).
+2. Query Loki for `{compose_service="$name"}` over the last 15 minutes and look for errors
+   around the first failing timestamp.
+3. Copy a `trace_id=<32 lowercase hex>` from a Loki line into Tempo to find the failing span.
+
+For a full investigation also check `up{job="$name"}` in Prometheus, the container logs
+(`docker compose -f docker-compose/docker-compose.yml logs $name --tail=100`), and the
+service's `/healthz` endpoint.

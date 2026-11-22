@@ -23,6 +23,11 @@ slos:
     threshold_seconds: 0.5
     histogram: webhook_received_duration_seconds
 
+metrics:
+  requests_total: webhook_received_total
+  latency_histogram: webhook_received_duration_seconds
+  route_label: route
+
 routes_allowlist:
   - /critical
   - /warning

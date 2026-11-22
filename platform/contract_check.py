@@ -5,6 +5,9 @@ Eight checks per service, each PASS / FAIL / SKIP with quoted evidence:
   metrics_reachable, service_label, route_label, series_budget,
   healthz, otlp_traces, trace_id_log_format, descriptor
 
+Optional `metrics:` descriptors are verified against the scraped series inside the
+existing `descriptor` check (no ninth check).
+
 Usage:
   python3 platform/contract_check.py \
       --service target-app=http://localhost:18000 \
@@ -51,7 +54,7 @@ FLOAT_RE = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?")
 
 _MISSING = object()
 
-DESCRIPTOR_TOP_KEYS = (
+DESCRIPTOR_REQUIRED_KEYS = (
     "name",
     "owner",
     "namespace",
@@ -62,6 +65,11 @@ DESCRIPTOR_TOP_KEYS = (
     "routes_allowlist",
     "runbook",
 )
+# Schema v1 amendment 2026-11-22: metrics is optional.
+DESCRIPTOR_OPTIONAL_KEYS = ("metrics",)
+DESCRIPTOR_TOP_KEYS = DESCRIPTOR_REQUIRED_KEYS + DESCRIPTOR_OPTIONAL_KEYS
+METRIC_NAME_RE = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
+ROUTE_LABELS = ("route", "endpoint")
 
 
 class YamlError(ValueError):
@@ -520,7 +528,7 @@ def validate_descriptor(data, service_name):
     for key in data:
         if key not in DESCRIPTOR_TOP_KEYS:
             problems.append(f"{key}: unknown top-level key")
-    for key in DESCRIPTOR_TOP_KEYS:
+    for key in DESCRIPTOR_REQUIRED_KEYS:
         if key not in data:
             problems.append(f"{key}: missing")
 
@@ -577,6 +585,23 @@ def validate_descriptor(data, service_name):
                 problems.append("slos.latency.threshold_seconds: expected positive number")
             _check_string(problems, latency, "histogram", "slos.latency.histogram")
 
+    metrics = data.get("metrics", _MISSING)
+    if metrics is not _MISSING:
+        if not isinstance(metrics, dict):
+            problems.append("metrics: expected mapping")
+        else:
+            allowed = ("requests_total", "latency_histogram", "route_label")
+            for key in metrics:
+                if key not in allowed:
+                    problems.append(f"metrics.{key}: unknown key")
+            for key in ("requests_total", "latency_histogram"):
+                value = _check_string(problems, metrics, key, f"metrics.{key}")
+                if isinstance(value, str) and not METRIC_NAME_RE.fullmatch(value):
+                    problems.append(f"metrics.{key}: not a valid Prometheus metric name")
+            route_label = metrics.get("route_label", "route")
+            if route_label not in ROUTE_LABELS:
+                problems.append(f"metrics.route_label: expected one of {', '.join(ROUTE_LABELS)}")
+
     routes = data.get("routes_allowlist", _MISSING)
     if routes is _MISSING:
         problems.append("routes_allowlist: missing")
@@ -589,7 +614,12 @@ def validate_descriptor(data, service_name):
     return problems
 
 
-def check_descriptor(name, services_dir):
+def _metric_observed(name, sample_names):
+    """A histogram is exposed as <name>_bucket/_sum/_count/_created."""
+    return any(sample == name or sample.startswith(name + "_") for sample in sample_names)
+
+
+def check_descriptor(name, services_dir, samples=None):
     path = os.path.join(services_dir, f"{name}.yaml")
     if not os.path.isfile(path):
         return Result("descriptor", FAIL, f"no descriptor: {path}")
@@ -606,7 +636,26 @@ def check_descriptor(name, services_dir):
         return Result("descriptor", FAIL, evidence)
     port = data["scrape"]["port"]
     routes = len(data["routes_allowlist"])
-    return Result("descriptor", PASS, f"{path}: schema v1 valid (port {port}, {routes} routes)")
+    evidence = f"{path}: schema v1 valid (port {port}, {routes} routes)"
+
+    metrics = data.get("metrics")
+    if isinstance(metrics, dict):
+        declared = [metrics["requests_total"], metrics["latency_histogram"]]
+        if samples is None:
+            evidence += "; metrics declared but /metrics unavailable to verify"
+        else:
+            sample_names = {sample_name for sample_name, _ in samples}
+            missing = [m for m in declared if not _metric_observed(m, sample_names)]
+            if missing:
+                evidence += f"; metrics not observed in scraped series: {', '.join(missing)}"
+                return Result("descriptor", FAIL, evidence)
+            evidence += (
+                f"; metrics: requests_total={metrics['requests_total']} "
+                f"latency_histogram={metrics['latency_histogram']} "
+                f"({len(declared)}/{len(declared)} observed)"
+            )
+
+    return Result("descriptor", PASS, evidence)
 
 
 def run_service(name, base, timeout, prometheus, services_dir):
@@ -618,7 +667,7 @@ def run_service(name, base, timeout, prometheus, services_dir):
     results.append(check_healthz(base, timeout))
     results.append(check_otlp_traces(name, timeout))
     results.append(check_trace_id_log_format(name, timeout))
-    results.append(check_descriptor(name, services_dir))
+    results.append(check_descriptor(name, services_dir, samples))
     return results
 
 

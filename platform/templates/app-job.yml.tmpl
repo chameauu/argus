@@ -1,0 +1,8 @@
+  - job_name: "$name"
+    metrics_path: $metrics_path
+    scrape_interval: $interval
+    static_configs:
+      - targets: ["$target"]
+    metric_relabel_configs:
+      - target_label: service
+        replacement: $name
