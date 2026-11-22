@@ -3,6 +3,7 @@ import os
 import random
 import threading
 import time
+from collections import deque
 
 from fastapi import FastAPI, Query, Request, Response
 from opentelemetry import trace
@@ -84,17 +85,29 @@ http_request_duration_seconds = Histogram(
 )
 
 
+QUEUE_TARGET = 50.0
+QUEUE_MIN = 30.0
+QUEUE_MAX = 70.0
+QUEUE_REVERSION = 0.25
+SUCCESS_RATIO_WINDOW = 200
+
+
 def _simulate_business_metrics():
-    queue_depth = 20
-    success_count = 0
-    total_count = 0
+    # Bounded, mean-reverting walk. Arrivals and drains share the same mean and
+    # a pull toward QUEUE_TARGET absorbs the difference, so the gauge stays in
+    # [QUEUE_MIN, QUEUE_MAX] by itself: never negative, never near the 100
+    # alert threshold. POST /admin/override still wins over the simulated value
+    # and can force any value (including >100) for alert demonstrations.
+    queue_depth = QUEUE_TARGET
+    recent_deliveries: deque[bool] = deque(maxlen=SUCCESS_RATIO_WINDOW)
 
     while True:
         active_users_total.set(random.randint(50, 500))
 
         arrivals = random.randint(0, 8)
-        drained = random.randint(0, 6)
-        queue_depth = max(0, queue_depth + arrivals - drained)
+        drained = random.randint(0, 8)
+        queue_depth += arrivals - drained + (QUEUE_TARGET - queue_depth) * QUEUE_REVERSION
+        queue_depth = min(QUEUE_MAX, max(QUEUE_MIN, queue_depth))
         override_depth = overrides["job_queue_depth"]
         if override_depth is not None:
             job_queue_depth.set(override_depth)
@@ -109,18 +122,18 @@ def _simulate_business_metrics():
             status = "failure" if failed else "success"
             jobs_processed_total.labels(status=status).inc()
 
+        # Rolling window instead of a lifetime average: the ratio stays in a
+        # tight healthy band (~0.83) and reacts to a real delivery regression.
         for _ in range(random.randint(1, 5)):
             duration = random.uniform(0.05, 3.0)
             webhook_delivery_duration_seconds.observe(duration)
-            total_count += 1
-            if duration < 2.5:
-                success_count += 1
+            recent_deliveries.append(duration < 2.5)
 
         override_ratio = overrides["webhook_delivery_success_ratio"]
         if override_ratio is not None:
             webhook_delivery_success_ratio.set(override_ratio)
-        elif total_count > 0:
-            webhook_delivery_success_ratio.set(success_count / total_count)
+        elif recent_deliveries:
+            webhook_delivery_success_ratio.set(sum(recent_deliveries) / len(recent_deliveries))
 
         time.sleep(5)
 

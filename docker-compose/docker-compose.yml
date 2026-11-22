@@ -118,13 +118,9 @@ services:
       target-app:
         condition: service_healthy
     mem_limit: 32m
-    entrypoint: >
-      sh -c "while true; do
-        curl -s -o /dev/null http://target-app:8000/work || true;
-        curl -s -o /dev/null http://target-app:8000/error-prone || true;
-        curl -s -o /dev/null http://target-app:8000/slow || true;
-        sleep 2;
-      done"
+    volumes:
+      - ../load-generator:/scripts:ro
+    entrypoint: ["sh", "/scripts/loop.sh"]
 
   webhook-receiver:
     build:
