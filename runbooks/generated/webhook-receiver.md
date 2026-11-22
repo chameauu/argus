@@ -14,7 +14,7 @@ service scraped at `webhook-receiver:8080/metrics` every 15s. It exposes 3 route
 - **Metrics:** counter `webhook_received_total`, histogram `webhook_received_duration_seconds` (label `route`).
 
 ## First three diagnostic steps
-1. Open the generated dashboard: [dashboards/generated/webhook-receiver.json](../../dashboards/generated/webhook-receiver.json).
+1. Open the generated dashboard: [dashboards/generated/red-webhook-receiver.json](../../dashboards/generated/red-webhook-receiver.json).
 2. Query Loki for `{compose_service="webhook-receiver"}` over the last 15 minutes and look for errors
    around the first failing timestamp.
 3. Copy a `trace_id=<32 lowercase hex>` from a Loki line into Tempo to find the failing span.

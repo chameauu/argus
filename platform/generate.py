@@ -9,9 +9,17 @@ second YAML reader.
 Generated:
   docker-compose/configs/prometheus/prometheus.yml   whole file
   alert-rules/generated/red-<name>.yml                RED rules
+  alert-rules/generated/slo-<name>.yml                Sloth SLO rules
   runbooks/generated/<name>.md                        runbook stub
+  dashboards/generated/red-<name>.json                per-service RED dashboard
 
-Dashboards are owned by phase 2b and are intentionally not generated here.
+The SLO rules are produced by running the pinned Sloth image over a spec
+rendered from the descriptor. Sloth's ``validate`` runs as a gate before
+``generate``; if Docker is unavailable the whole run fails instead of quietly
+skipping the SLO artefacts.
+
+``dashboards/generated/slo-overview.json`` is vendored from Grafana.com (see
+``dashboards/generated/README.md``), not rendered here.
 
 Usage:
   python3 platform/generate.py [--services-dir services] [--out .] [--check]
@@ -20,11 +28,15 @@ Usage:
 tree. Exit 0 means no drift; exit 1 prints a per-file summary.
 
 Standard library only. Output is deterministic: sorted services, LF endings,
-no timestamps, no absolute paths.
+no timestamps, no absolute paths. Sloth's output embeds only its build hash,
+which the pinned digest fixes.
 """
 
 import argparse
+import json
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -38,6 +50,12 @@ TEMPLATE_DIR = PLATFORM_DIR / "templates"
 PROMETHEUS_OUTPUT = "docker-compose/configs/prometheus/prometheus.yml"
 RULES_DIR = "alert-rules/generated"
 RUNBOOKS_DIR = "runbooks/generated"
+DASHBOARDS_DIR = "dashboards/generated"
+
+# Pinned by digest: docker.io and ghcr.io publish no semver tags for Sloth.
+SLOTH_IMAGE = "slok/sloth@sha256:556583d62003ef4d7599d97385f7097bf5aa9ab2c68a550bc60de2e22c06c0a7"
+SLOTH_SPEC_IN_CONTAINER = "/spec/spec.yml"
+SLOTH_TIMEOUT_S = 180
 
 # Keep the rendered scrape_configs stable across runs.
 NAME_PART_RE = re.compile(r"[-_.]+")
@@ -86,6 +104,11 @@ def load_services(services_dir):
     return services
 
 
+def format_objective(value):
+    """0.995 -> "99.5": Sloth wants the objective as a percentage number."""
+    return f"{value * 100:g}"
+
+
 def service_context(name, data):
     scrape = data["scrape"]
     health = data["health"]
@@ -96,6 +119,7 @@ def service_context(name, data):
     routes = data["routes_allowlist"]
     route_label = metrics.get("route_label", "route")
     threshold = format_number(latency["threshold_seconds"])
+    pascal = pascal_case(name)
     return {
         "name": name,
         "owner": data["owner"],
@@ -108,20 +132,28 @@ def service_context(name, data):
         "route_count": str(len(routes)),
         "routes": ", ".join(f"`{route}`" for route in routes) or "none",
         "availability_objective": format_percent(availability["objective"]),
+        "availability_objective_pct": format_objective(availability["objective"]),
         "availability_window": availability["window"],
         "error_selector": availability["error_selector"],
         "latency_objective": format_percent(latency["objective"]),
+        "latency_objective_pct": format_objective(latency["objective"]),
         "threshold": threshold,
         "threshold_seconds": threshold,
         "route_label": route_label,
+        "route_legend": "{{" + route_label + "}}",
         "requests_metric": metrics.get("requests_total", "not declared"),
         "latency_metric": metrics.get("latency_histogram", "not declared"),
+        "latency_histogram": metrics.get("latency_histogram", "not_declared"),
         "latency_bucket": (
             f"{metrics['latency_histogram']}_bucket" if metrics else "not_declared_bucket"
         ),
-        "down_alert": f"{pascal_case(name)}Down",
-        "error_alert": f"{pascal_case(name)}HighErrorRate",
-        "latency_alert": f"{pascal_case(name)}HighLatency",
+        "down_alert": f"{pascal}Down",
+        "error_alert": f"{pascal}HighErrorRate",
+        "latency_alert": f"{pascal}HighLatency",
+        # Alert names are not templated by Sloth: embed the service name so two
+        # descriptors with the same SLO names cannot collapse into one alert.
+        "availability_slo_alert": f"{pascal}AvailabilityBurnRate",
+        "latency_slo_alert": f"{pascal}LatencyBurnRate",
         "generated_runbook": f"{RUNBOOKS_DIR}/{name}.md",
     }
 
@@ -151,11 +183,120 @@ def render_runbook(name, data):
     return body.rstrip("\n") + "\n"
 
 
+def ensure_docker():
+    """Fail loudly when Docker is unavailable: SLO artefacts must not be skipped."""
+    if shutil.which("docker") is None:
+        raise GenerateError(
+            "docker not found on PATH; Sloth needs Docker to render alert-rules/generated/slo-*.yml"
+        )
+    try:
+        probe = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GenerateError(f"docker is not usable: {type(exc).__name__}: {exc}") from exc
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout).strip().splitlines()
+        reason = detail[-1] if detail else f"exit {probe.returncode}"
+        raise GenerateError(f"docker is not usable: {reason}")
+
+
+def run_sloth(args, spec_text):
+    """Run the pinned Sloth image; return (stdout, stderr, returncode)."""
+    try:
+        completed = subprocess.run(
+            ["docker", "run", "--rm", "-i", SLOTH_IMAGE, *args],
+            input=spec_text,
+            capture_output=True,
+            text=True,
+            timeout=SLOTH_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GenerateError(f"sloth {args[0]} failed to run: {type(exc).__name__}: {exc}") from exc
+    return completed.stdout, completed.stderr, completed.returncode
+
+
+def sloth_generate(name, data):
+    """Render the spec, validate it, generate rules. Returns Sloth's YAML output."""
+    context = service_context(name, data)
+    spec = read_template("sloth-spec.yml.tmpl").substitute(context).rstrip("\n") + "\n"
+
+    # `validate` needs a real file path; the container is non-root and `-o` to a
+    # host mount fails, so bind-mount a 0644 temp file read-only instead.
+    with tempfile.TemporaryDirectory(prefix="argus-sloth-") as temp_dir:
+        spec_path = Path(temp_dir) / "spec.yml"
+        spec_path.write_text(spec, encoding="utf-8")
+        spec_path.chmod(0o644)
+        try:
+            validate = subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "-v",
+                    f"{spec_path}:{SLOTH_SPEC_IN_CONTAINER}:ro",
+                    SLOTH_IMAGE,
+                    "validate",
+                    "-i",
+                    SLOTH_SPEC_IN_CONTAINER,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=SLOTH_TIMEOUT_S,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GenerateError(
+                f"{name}: sloth validate failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        if validate.returncode != 0 or "Validation succeeded" not in (
+            validate.stdout + validate.stderr
+        ):
+            detail = (validate.stdout + validate.stderr).strip().splitlines()
+            reason = detail[-1] if detail else f"exit {validate.returncode}"
+            raise GenerateError(f"{name}: sloth rejected the generated spec: {reason}")
+
+    stdout, stderr, returncode = run_sloth(["generate", "-i", "/dev/stdin"], spec)
+    if returncode != 0:
+        detail = (stdout + stderr).strip().splitlines()
+        reason = detail[-1] if detail else f"exit {returncode}"
+        raise GenerateError(f"{name}: sloth generate failed: {reason}")
+    if "Code generated by Sloth" not in stdout:
+        raise GenerateError(f"{name}: sloth generated no rule file")
+    return stdout if stdout.endswith("\n") else stdout + "\n"
+
+
+def render_slo_rules(name, data):
+    return sloth_generate(name, data)
+
+
+def render_red_dashboard(name, data):
+    context = service_context(name, data)
+    body = read_template("red-dashboard.json.tmpl").substitute(context)
+    # Fail here rather than in Grafana if a substituted value broke the JSON.
+    try:
+        json.loads(body)
+    except ValueError as exc:
+        raise GenerateError(f"{name}: rendered dashboard is not valid JSON: {exc}") from exc
+    return body.rstrip("\n") + "\n"
+
+
 def render_all(services):
     rendered = {PROMETHEUS_OUTPUT: render_prometheus(services)}
+    needs_sloth = any(data.get("metrics") for _, data in services)
+    if needs_sloth:
+        ensure_docker()
     for name, data in services:
         rendered[f"{RULES_DIR}/red-{name}.yml"] = render_rules(name, data)
         rendered[f"{RUNBOOKS_DIR}/{name}.md"] = render_runbook(name, data)
+        if data.get("metrics"):
+            rendered[f"{RULES_DIR}/slo-{name}.yml"] = render_slo_rules(name, data)
+            rendered[f"{DASHBOARDS_DIR}/red-{name}.json"] = render_red_dashboard(name, data)
     return dict(sorted(rendered.items()))
 
 

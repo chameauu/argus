@@ -14,7 +14,7 @@ none.
 - **Metrics:** counter `custom_exporter_http_requests_total`, histogram `custom_exporter_http_request_duration_seconds` (label `route`).
 
 ## First three diagnostic steps
-1. Open the generated dashboard: [dashboards/generated/custom-exporter.json](../../dashboards/generated/custom-exporter.json).
+1. Open the generated dashboard: [dashboards/generated/red-custom-exporter.json](../../dashboards/generated/red-custom-exporter.json).
 2. Query Loki for `{compose_service="custom-exporter"}` over the last 15 minutes and look for errors
    around the first failing timestamp.
 3. Copy a `trace_id=<32 lowercase hex>` from a Loki line into Tempo to find the failing span.

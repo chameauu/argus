@@ -1,0 +1,60 @@
+# Rendered by platform/generate.py from services/$name.yaml, then fed to Sloth.
+# Sloth validates this spec before generating alert-rules/generated/slo-$name.yml.
+version: "prometheus/v1"
+service: "$name"
+labels:
+  owner: "$owner"
+  namespace: "$namespace"
+  environment: "$environment"
+slos:
+  # Availability: the descriptor's error selector over the request counter.
+  - name: "availability"
+    objective: $availability_objective_pct
+    description: "$name must serve $availability_objective_pct% of requests without errors over $availability_window."
+    sli:
+      events:
+        # `or vector(0)` keeps the SLI at 0% errors instead of disappearing when
+        # the error selector matches no series (e.g. a healthy service has never
+        # returned 5xx), so both SLOs stay visible to alerts and dashboards.
+        error_query: |
+          sum(rate($requests_metric{service="$name",$error_selector}[{{.window}}])) or vector(0)
+        total_query: |
+          sum(rate($requests_metric{service="$name"}[{{.window}}]))
+    alerting:
+      name: "$availability_slo_alert"
+      page_alert:
+        labels:
+          severity: critical
+          service: "$name"
+          runbook: "$generated_runbook"
+      ticket_alert:
+        labels:
+          severity: warning
+          service: "$name"
+          runbook: "$generated_runbook"
+
+  # Latency: a raw ratio because feeding an `le` bucket to `events` would invert
+  # the SLI. error_ratio = 1 - (requests faster than the threshold / all requests).
+  - name: "latency"
+    objective: $latency_objective_pct
+    description: "$name must serve $latency_objective_pct% of requests in under $threshold_seconds s over $availability_window."
+    sli:
+      raw:
+        error_ratio_query: |
+          1 - (
+            sum(rate(${latency_histogram}_bucket{service="$name",le="$threshold_seconds"}[{{.window}}]))
+            /
+            sum(rate(${latency_histogram}_count{service="$name"}[{{.window}}]))
+          )
+    alerting:
+      name: "$latency_slo_alert"
+      page_alert:
+        labels:
+          severity: critical
+          service: "$name"
+          runbook: "$generated_runbook"
+      ticket_alert:
+        labels:
+          severity: warning
+          service: "$name"
+          runbook: "$generated_runbook"

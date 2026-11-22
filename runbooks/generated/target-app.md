@@ -14,7 +14,7 @@ service scraped at `target-app:8000/metrics` every 15s. It exposes 3 route(s):
 - **Metrics:** counter `target_app_http_requests_total`, histogram `target_app_http_request_duration_seconds` (label `endpoint`).
 
 ## First three diagnostic steps
-1. Open the generated dashboard: [dashboards/generated/target-app.json](../../dashboards/generated/target-app.json).
+1. Open the generated dashboard: [dashboards/generated/red-target-app.json](../../dashboards/generated/red-target-app.json).
 2. Query Loki for `{compose_service="target-app"}` over the last 15 minutes and look for errors
    around the first failing timestamp.
 3. Copy a `trace_id=<32 lowercase hex>` from a Loki line into Tempo to find the failing span.
