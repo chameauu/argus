@@ -29,6 +29,16 @@ scrape_configs:
       - target_label: service
         replacement: node-exporter
 
+  # The log agent monitors itself. Without this job the mitigation recorded in
+  # docs/platform/adr-0001-log-agent.md (loki_process_dropped_lines_total) is
+  # unobservable from the platform.
+  - job_name: "alloy"
+    static_configs:
+      - targets: ["alloy:12345"]
+    metric_relabel_configs:
+      - target_label: service
+        replacement: alloy
+
   - job_name: "custom-exporter"
     metrics_path: /metrics
     scrape_interval: 15s

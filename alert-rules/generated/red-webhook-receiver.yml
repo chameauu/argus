@@ -16,7 +16,7 @@ groups:
       - alert: WebhookReceiverHighErrorRate
         expr: |
           (
-            sum(rate(webhook_received_total{service="webhook-receiver",status=~"5.."}[5m]))
+            sum(rate(webhook_received_total{service="webhook-receiver",status=~"rejected|5.."}[5m]))
             /
             sum(rate(webhook_received_total{service="webhook-receiver"}[5m]))
           ) > 0.05

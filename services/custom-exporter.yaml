@@ -15,7 +15,7 @@ slos:
   availability:
     objective: 0.995
     window: 30d
-    error_selector: 'status="failure"'
+    error_selector: 'status=~"5.."'
   latency:
     objective: 0.95
     threshold_seconds: 0.5

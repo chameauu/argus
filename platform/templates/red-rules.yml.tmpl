@@ -16,7 +16,7 @@ groups:
       - alert: $error_alert
         expr: |
           (
-            sum(rate($requests_metric{service="$name",status=~"5.."}[5m]))
+            sum(rate($requests_metric{service="$name",$error_selector}[5m]))
             /
             sum(rate($requests_metric{service="$name"}[5m]))
           ) > 0.05

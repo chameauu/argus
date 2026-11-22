@@ -9,7 +9,7 @@ service scraped at `webhook-receiver:8080/metrics` every 15s. It exposes 3 route
 
 ## SLOs
 - **Availability:** 99.5% of requests must not fail over
-  30d (`status=~"5.."`).
+  30d (`status=~"rejected|5.."`).
 - **Latency:** 95% of requests must complete in under 0.5 s.
 - **Metrics:** counter `webhook_received_total`, histogram `webhook_received_duration_seconds` (label `route`).
 

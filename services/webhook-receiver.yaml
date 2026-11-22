@@ -13,10 +13,11 @@ health:
 
 slos:
   availability:
-    # No error status is emitted yet; v1 default selector until one exists.
     objective: 0.995
     window: 30d
-    error_selector: 'status=~"5.."'
+    # Invalid payloads are counted as status="rejected" (HTTP 400); 5xx remains
+    # in the selector in case a future handler returns a server error.
+    error_selector: 'status=~"rejected|5.."'
   latency:
     # Pending at drafting time; the app's /metrics now exposes this histogram.
     objective: 0.95

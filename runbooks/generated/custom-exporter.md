@@ -9,7 +9,7 @@ none.
 
 ## SLOs
 - **Availability:** 99.5% of requests must not fail over
-  30d (`status="failure"`).
+  30d (`status=~"5.."`).
 - **Latency:** 95% of requests must complete in under 0.5 s.
 - **Metrics:** counter `custom_exporter_http_requests_total`, histogram `custom_exporter_http_request_duration_seconds` (label `route`).
 

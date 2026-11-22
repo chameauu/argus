@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """Conformance checker for the argus platform contract v1 (phase 0).
 
-Eight checks per service, each PASS / FAIL / SKIP with quoted evidence:
+Nine checks per service, each PASS / FAIL / SKIP with quoted evidence:
   metrics_reachable, service_label, route_label, series_budget,
-  healthz, otlp_traces, trace_id_log_format, descriptor
+  healthz, otlp_traces, trace_id_log_format, log_continuity, descriptor
 
 Optional `metrics:` descriptors are verified against the scraped series inside the
-existing `descriptor` check (no ninth check).
+existing `descriptor` check (no extra check).
 
 Usage:
   python3 platform/contract_check.py \
       --service target-app=http://localhost:18000 \
       --service custom-exporter=http://localhost:19200 \
       --service webhook-receiver=http://localhost:18090 [--json] [--timeout 5] \
-      [--prometheus http://localhost:19090] [--services-dir services]
+      [--prometheus http://localhost:19090] [--services-dir services] \
+      [--max-log-gap 60]
 
 Exit code: 0 when every check is PASS or SKIP, 1 when any check FAILs.
 Standard library only.
@@ -46,6 +47,10 @@ ROUTE_VALUE_LIMIT = 50
 TRACE_LOOKBACK_S = 15 * 60
 LOG_LOOKBACK_NS = 15 * 60 * 1_000_000_000
 TRACE_ID_RE = re.compile(r"trace_id=[0-9a-f]{32}")
+LOG_CONTINUITY_WINDOW_S = 10 * 60
+LOG_CONTINUITY_MAX_AGE_S = 120.0
+LOG_CONTINUITY_MIN_LINES = 5
+DEFAULT_MAX_LOG_GAP_S = 60.0
 SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{(.*)\})?\s+(\S+)(?:\s+\S+)?(?:\s+#.*)?$")
 LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
 RAW_ID_SEGMENT_RE = re.compile(r"[0-9a-fA-F]{32}")
@@ -330,6 +335,65 @@ def check_trace_id_log_format(name, timeout):
     else:
         evidence = f"0/0 lines: no log streams for {query} in last 15m"
     return Result("trace_id_log_format", PASS if matched else FAIL, evidence)
+
+
+def check_log_continuity(name, timeout, max_gap):
+    """Newest line is fresh and no quiet stretch exceeds the gap budget.
+
+    A tail that silently stopped shows up here, which duplicate-based checks
+    would miss. Low-traffic services (< 5 lines in the window) are SKIP, not
+    FAIL, so a quiet service cannot fail the contract on volume alone.
+    """
+    end_ns = time.time_ns()
+    start_ns = end_ns - LOG_CONTINUITY_WINDOW_S * 1_000_000_000
+    query = f'{{compose_service="{name}"}}'
+    params = urllib.parse.urlencode(
+        {
+            "query": query,
+            "limit": 5000,
+            "start": start_ns,
+            "end": end_ns,
+            "direction": "backward",
+        }
+    )
+    status, body, _, error = fetch(f"{LOKI_URL}/loki/api/v1/query_range?{params}", timeout)
+    if error:
+        return Result("log_continuity", FAIL, f"loki query failed: {error}")
+    if status != 200:
+        return Result("log_continuity", FAIL, f"loki query -> HTTP {status}: {body[:100].strip()}")
+    try:
+        streams = json.loads(body)["data"]["result"]
+        timestamps = [
+            int(value[0])
+            for stream in streams
+            for value in stream.get("values", [])
+            if len(value) > 1
+        ]
+    except (ValueError, KeyError, TypeError):
+        return Result(
+            "log_continuity", FAIL, f"loki query -> 200 but unexpected body: {body[:80]!r}"
+        )
+
+    window = LOG_CONTINUITY_WINDOW_S // 60
+    if len(timestamps) < LOG_CONTINUITY_MIN_LINES:
+        detail = (
+            f"{len(timestamps)} line(s) for {query} in last {window}m "
+            f"(< {LOG_CONTINUITY_MIN_LINES}; low traffic, continuity not evaluable)"
+        )
+        return Result("log_continuity", SKIP, detail)
+
+    ordered = sorted(timestamps)
+    newest_age = (time.time_ns() - ordered[-1]) / 1e9
+    largest_gap = max(
+        (later - earlier) / 1e9 for earlier, later in zip(ordered, ordered[1:], strict=False)
+    )
+    evidence = (
+        f"{len(timestamps)} lines/{window}m for {query}: newest {newest_age:.0f}s old "
+        f"(budget {LOG_CONTINUITY_MAX_AGE_S:g}s), max gap {largest_gap:.1f}s "
+        f"(budget {max_gap:g}s)"
+    )
+    ok = newest_age <= LOG_CONTINUITY_MAX_AGE_S and largest_gap <= max_gap
+    return Result("log_continuity", PASS if ok else FAIL, evidence)
 
 
 def _strip_comment(line):
@@ -658,7 +722,7 @@ def check_descriptor(name, services_dir, samples=None):
     return Result("descriptor", PASS, evidence)
 
 
-def run_service(name, base, timeout, prometheus, services_dir):
+def run_service(name, base, timeout, prometheus, services_dir, max_log_gap):
     metrics_result, samples = check_metrics_reachable(base, timeout)
     results = [metrics_result]
     results.append(check_service_label(name, prometheus, timeout))
@@ -667,6 +731,7 @@ def run_service(name, base, timeout, prometheus, services_dir):
     results.append(check_healthz(base, timeout))
     results.append(check_otlp_traces(name, timeout))
     results.append(check_trace_id_log_format(name, timeout))
+    results.append(check_log_continuity(name, timeout, max_log_gap))
     results.append(check_descriptor(name, services_dir, samples))
     return results
 
@@ -738,6 +803,15 @@ def main(argv=None):
         default="services",
         help="directory holding <name>.yaml descriptors (default services)",
     )
+    parser.add_argument(
+        "--max-log-gap",
+        type=float,
+        default=DEFAULT_MAX_LOG_GAP_S,
+        metavar="SECONDS",
+        help=(
+            f"largest allowed gap between consecutive log lines (default {DEFAULT_MAX_LOG_GAP_S:g})"
+        ),
+    )
     args = parser.parse_args(argv)
 
     bases = {}
@@ -750,12 +824,16 @@ def main(argv=None):
         parser.error("at least one --service NAME=BASE_URL is required")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.max_log_gap <= 0:
+        parser.error("--max-log-gap must be positive")
 
     prometheus = args.prometheus.rstrip("/")
     all_results = {}
     for name, base in bases.items():
         try:
-            all_results[name] = run_service(name, base, args.timeout, prometheus, args.services_dir)
+            all_results[name] = run_service(
+                name, base, args.timeout, prometheus, args.services_dir, args.max_log_gap
+            )
         except Exception as exc:  # never traceback on an unexpected failure
             all_results[name] = [Result("internal_error", FAIL, f"{type(exc).__name__}: {exc}")]
 

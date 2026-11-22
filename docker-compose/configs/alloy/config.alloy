@@ -9,10 +9,13 @@
 // Loki adds service_name from the container label at ingest time
 // (limits_config.discover_service_name), exactly as it did before.
 //
-// Read positions live in /var/lib/alloy/data (named volume). With a fresh
-// volume Alloy starts each container's log from the beginning: Loki rejects
-// entries older than its retention window, so the first start is noisy but
-// does not corrupt the store. Never run without the volume.
+// Read positions live in /var/lib/alloy/data (named volume). loki.source.docker
+// has no tail_from_end, so a fresh volume replays every container log from the
+// beginning. loki.process "filter" drops entries older than one hour before
+// they reach Loki, so the replay is filtered rather than written wholesale and
+// `down -v` needs no hand-seeded positions. Loki's own
+// `loki_process_dropped_lines_total` counter (Alloy /metrics on :12345) is the
+// evidence that the filter, not silence, handled the replay.
 
 // Discover every container on the host, then keep only this compose project.
 // Without the keep rule, unrelated containers on this host flood Loki.
@@ -65,10 +68,21 @@ loki.source.docker "argus" {
   host          = "unix:///var/run/docker.sock"
   targets       = discovery.relabel.argus_keep.output
   relabel_rules = loki.relabel.argus.rules
-  forward_to    = [loki.write.loki.receiver]
+  forward_to    = [loki.process.filter.receiver]
 }
 
-loki.write "loki" {
+// Filter the cold-start replay: live logs are seconds old, so only replayed
+// history is dropped. Dropped lines increment loki_process_dropped_lines_total.
+loki.process "filter" {
+  forward_to = [loki.write.default.receiver]
+
+  stage.drop {
+    older_than          = "1h"
+    drop_counter_reason = "replay"
+  }
+}
+
+loki.write "default" {
   endpoint {
     url = "http://loki:3100/loki/api/v1/push"
   }
