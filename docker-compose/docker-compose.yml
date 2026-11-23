@@ -263,7 +263,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
-    mem_limit: 512m
+    mem_limit: 1g      # tempo idles near 500 MiB with the search cache warm; a 512 MiB
+                       # limit had it at 99.3% and restarting (19 restarts), silently losing traces.
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.109.0
