@@ -1,0 +1,44 @@
+# Offline unit tests for ServiceTelemetryStale, the `up` replacement for
+# pushed OTLP services.
+#
+# Run inside the pinned Prometheus image (see platform/test_rules.sh):
+#   promtool test rules platform/tests/staleness_test.yml
+#
+# The alert reads the timestamp of the newest *_http_requests_total sample, so
+# each case is a traffic stream that stops at a known minute and an evaluation
+# at a known minute later. `time()` in promtool is the case's fake clock, so the
+# age of the newest sample is exact.
+rule_files:
+  - ../../alert-rules/platform.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Newest sample at t=19m, evaluated at t=39m: 1200s (20m) of silence, past
+  # the 900s threshold. Must fire.
+  - interval: 1m
+    input_series:
+      - series: 'target_app_http_requests_total{service_name="stale-app",status="200"}'
+        values: '0+1x19'
+    alert_rule_test:
+      - eval_time: 39m
+        alertname: ServiceTelemetryStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: platform
+              service_name: stale-app
+            exp_annotations:
+              summary: "No HTTP telemetry from stale-app for 15 minutes"
+              description: 'stale-app last reported an *_http_requests_total sample 1200s ago (> 15m). No traffic is reaching the pipeline: the exporter detached, the collector is dropping it, or the app is wedged. Covers scraped and pushed services alike.'
+
+  # Newest sample at t=37m, evaluated at t=39m: only 120s (2m) of silence.
+  # Traffic is live; must not fire.
+  - interval: 1m
+    input_series:
+      - series: 'target_app_http_requests_total{service_name="live-app",status="200"}'
+        values: '0+1x37'
+    alert_rule_test:
+      - eval_time: 39m
+        alertname: ServiceTelemetryStale
+        exp_alerts: []

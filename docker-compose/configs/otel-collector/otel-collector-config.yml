@@ -23,12 +23,38 @@ processors:
       - key: deployment.environment
         value: local
         action: upsert
-      # Remote write maps `service.name` onto `job` and drops the remaining
-      # resource attributes, so the name is copied here as `service_name`.
-      # Dashboards and SLOs key on that label; `job` is the collector's own.
-      - key: service_name
-        from_attribute: service.name
-        action: insert
+      # Do NOT copy service.name into a `service_name` attribute here.
+      # The remote-write exporter already converts the resource attribute to a
+      # `service_name` label (and service.name to `job`); inserting a copy of
+      # our own makes the exporter emit both, and the duplicate is joined with
+      # ";" — measured as service_name="probe-x;probe-x" before this was
+      # removed. One attribute, one label.
+
+  # An OTLP app that omits service.name lands as an unattributable resource:
+  # every series it pushes is anonymous, and no per-service rule, SLO or
+  # dashboard can see it. Drop those datapoints at ingress instead of storing
+  # them, so a non-conforming app fails visibly (nothing appears) rather than
+  # silently polluting the store. This is a deliberate contract violation, not
+  # a partial success: the receiver still answers 200/partialSuccess, and the
+  # drop is silent in the collector log by design, which is why
+  # platform/contract_check.py probes for it instead of trusting the response.
+  #
+  # `filter` is applied after `resource` so it inspects the original
+  # service.name (the resource processor only inserts a copy and never removes
+  # it). error_mode: ignore keeps one malformed attribute from taking the
+  # pipeline down; the expression is a nil-or-empty test on the resource
+  # attribute in the metric/datapoint, span and log_record contexts.
+  filter/drop-unattributed:
+    error_mode: ignore
+    metrics:
+      datapoint:
+        - 'resource.attributes["service.name"] == nil or resource.attributes["service.name"] == ""'
+    traces:
+      span:
+        - 'resource.attributes["service.name"] == nil or resource.attributes["service.name"] == ""'
+    logs:
+      log_record:
+        - 'resource.attributes["service.name"] == nil or resource.attributes["service.name"] == ""'
 
   batch:
     timeout: 5s
@@ -68,13 +94,13 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, resource, batch]
+      processors: [memory_limiter, resource, filter/drop-unattributed, batch]
       exporters: [otlp/tempo]
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter, resource, batch]
+      processors: [memory_limiter, resource, filter/drop-unattributed, batch]
       exporters: [prometheusremotewrite]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, resource, batch]
+      processors: [memory_limiter, resource, filter/drop-unattributed, batch]
       exporters: [otlphttp/loki]

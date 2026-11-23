@@ -5,10 +5,13 @@ Ten checks per service, each PASS / FAIL / SKIP with quoted evidence:
   metrics_reachable, service_label, route_label, series_budget, series_integrity,
   healthz, otlp_traces, trace_id_log_format, log_continuity, descriptor
 
-One platform-level check runs before the per-service table:
+Two platform-level checks run before the per-service table:
   otlp_metrics — push one OTLP/JSON gauge to the collector and require
   Prometheus to store it. Scrape-based checks cannot see this: an OTLP push
   can be rejected or dropped at the collector while every scrape stays green.
+  otlp_service_name — push the same gauge without a resource service.name and
+  require Prometheus to store nothing. The collector drops unattributed
+  datapoints but still answers 200, so only the store proves the drop.
 
 Optional `metrics:` descriptors are verified against the scraped series inside the
 existing `descriptor` check (no extra check).
@@ -45,6 +48,7 @@ DEFAULT_PROMETHEUS_URL = os.environ.get("ARGUS_PROMETHEUS_URL", "http://localhos
 DEFAULT_COLLECTOR_URL = os.environ.get("ARGUS_COLLECTOR_URL", "http://localhost:4318")
 OTLP_PROBE_METRIC = "argus_contract_probe"
 OTLP_PROBE_WINDOW_S = 20.0
+OTLP_SERVICE_NAME_WINDOW_S = 10.0
 OTLP_PROBE_INTERVAL_S = 1.0
 
 # Runtime/client-library families are exempt from the series budget.
@@ -164,19 +168,19 @@ def post_otlp_metrics(collector, body, timeout):
         return None, "", time.monotonic() - started, describe_error(exc, timeout)
 
 
-def otlp_probe_body(probe):
-    """One gauge datapoint whose `probe` label makes the series unambiguous."""
+def otlp_probe_body(probe, service_name="argus-contract-probe"):
+    """One gauge datapoint whose `probe` label makes the series unambiguous.
+
+    ``service_name=None`` omits the resource attribute entirely: that is the
+    unattributed-resource case the collector is required to drop.
+    """
+    attributes = []
+    if service_name is not None:
+        attributes.append({"key": "service.name", "value": {"stringValue": service_name}})
     payload = {
         "resourceMetrics": [
             {
-                "resource": {
-                    "attributes": [
-                        {
-                            "key": "service.name",
-                            "value": {"stringValue": "argus-contract-probe"},
-                        }
-                    ]
-                },
+                "resource": {"attributes": attributes},
                 "scopeMetrics": [
                     {
                         "scope": {},
@@ -314,6 +318,71 @@ def check_otlp_metrics(collector, prometheus, timeout):
         f"{OTLP_PROBE_WINDOW_S:g}s — the collector accepted a metric it will never store"
     )
     return Result("otlp_metrics", FAIL, detail)
+
+
+def prometheus_series(prometheus, query, timeout):
+    """Run an instant query; return the raw result series (metric dicts)."""
+    params = urllib.parse.urlencode({"query": query})
+    status, body, _, error = fetch(f"{prometheus}/api/v1/query?{params}", timeout)
+    if error or status != 200:
+        return []
+    try:
+        return json.loads(body)["data"]["result"]
+    except (ValueError, KeyError, TypeError):
+        return []
+
+
+def check_otlp_service_name(collector, prometheus, timeout):
+    """An unattributed OTLP datapoint must not be stored.
+
+    The collector silently drops datapoints whose resource has no service.name
+    and still answers 200/partialSuccess, so the HTTP response proves nothing.
+    A thrown-away datapoint is the *desired* outcome here: this check PASSes
+    when the store stays empty and FAILs when the anonymous series appears
+    (that is how a "conforming" app becomes unattributable).
+    """
+    probe = uuid.uuid4().hex[:8]
+    post_started = time.monotonic()
+    body = otlp_probe_body(probe, service_name=None)
+    status, text, elapsed, error = post_otlp_metrics(collector, body, timeout)
+    if error:
+        detail = f"OTLP/HTTP POST {collector}/v1/metrics failed: {error}"
+        verdict = SKIP if "refused" in error.lower() else FAIL
+        return Result("otlp_service_name", verdict, detail)
+    if status != 200:
+        detail = f"OTLP/HTTP POST {collector}/v1/metrics -> HTTP {status} in {elapsed:.3f}s"
+        snippet = text[:100].strip()
+        if snippet:
+            detail += f": {snippet}"
+        return Result("otlp_service_name", FAIL, detail)
+
+    selector = f'{{__name__=~"{OTLP_PROBE_METRIC}.*",probe="{probe}"}}'
+    deadline = time.monotonic() + OTLP_SERVICE_NAME_WINDOW_S
+    while True:
+        stored, query_error = prometheus_count(prometheus, f"count({selector})", min(timeout, 2.0))
+        if query_error:
+            return Result("otlp_service_name", FAIL, query_error)
+        if stored and stored >= 1:
+            landed = prometheus_series(prometheus, selector, min(timeout, 2.0))
+            labels = landed[0].get("metric", {}) if landed else {}
+            name = labels.get("__name__", OTLP_PROBE_METRIC)
+            rendered = ", ".join(
+                f'{key}="{value}"' for key, value in sorted(labels.items()) if key != "__name__"
+            )
+            waited = time.monotonic() - post_started
+            detail = (
+                f"OTLP/HTTP 200 (partialSuccess) but unattributed {name}{{{rendered}}} "
+                f"was stored after {waited:.1f}s; an app without service.name must be rejected"
+            )
+            return Result("otlp_service_name", FAIL, detail)
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(OTLP_PROBE_INTERVAL_S)
+    detail = (
+        f"OTLP/HTTP 200 (partialSuccess) and no series for probe={probe} in Prometheus "
+        f"after {OTLP_SERVICE_NAME_WINDOW_S:g}s — unattributed datapoint dropped"
+    )
+    return Result("otlp_service_name", PASS, detail)
 
 
 def check_service_label(name, prometheus, timeout):
@@ -1133,10 +1202,15 @@ def main(argv=None):
 
     prometheus = args.prometheus.rstrip("/")
     collector = args.collector.rstrip("/")
-    try:
-        platform_results = [check_otlp_metrics(collector, prometheus, args.timeout)]
-    except Exception as exc:  # never traceback on an unexpected failure
-        platform_results = [Result("otlp_metrics", FAIL, f"{type(exc).__name__}: {exc}")]
+    platform_results = []
+    for check, runner in (
+        ("otlp_metrics", check_otlp_metrics),
+        ("otlp_service_name", check_otlp_service_name),
+    ):
+        try:
+            platform_results.append(runner(collector, prometheus, args.timeout))
+        except Exception as exc:  # never traceback on an unexpected failure
+            platform_results.append(Result(check, FAIL, f"{type(exc).__name__}: {exc}"))
 
     all_results = {}
     for name, base in bases.items():
@@ -1159,7 +1233,7 @@ def main(argv=None):
             "prometheus": prometheus,
             "collector": collector,
             "services_dir": args.services_dir,
-            "platform": asdict(platform_results[0]),
+            "platform": {result.check: asdict(result) for result in platform_results},
             "services": {
                 name: {
                     "base_url": bases[name],

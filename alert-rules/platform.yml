@@ -112,6 +112,47 @@ groups:
           summary: "Alertmanager is failing to deliver notifications ({{ $labels.integration }})"
           description: "{{ $labels.integration }} has failed notifications with reason {{ $labels.reason }} ({{ $value | printf \"%.4f\" }} failures/s over 5m). Alerts are firing but not leaving the box."
 
+      # Pushed OTLP applications have no `up` series: the collector's remote
+      # write creates their series, so no scrape target exists to go down and
+      # PlatformTargetDown can never see them detach. `up` is really a
+      # freshness signal, and this is its replacement on the app side: any
+      # service that reported HTTP counters within the last hour but has gone
+      # quiet for 15 minutes is either detached or wedged. It deliberately runs
+      # on the metric name rather than on the scrape job, so scraper and pusher
+      # are covered by the same rule — for a scraped service that keeps
+      # answering, `up` stays 1 while this measures the traffic itself.
+      # The obvious spelling, timestamp(last_over_time(...)), does NOT work:
+      # timestamp() of a function result returns the *evaluation* time, not the
+      # sample's time (measured on 2.53: it read 2700s at eval_time 45m for a
+      # series whose newest sample was at 1140s). timestamp() only preserves
+      # the real sample time when its argument is a bare vector selector, so
+      # the selector is timestamped inside a subquery and last_over_time picks
+      # the newest of those timestamps. That is the wall-clock time of the last
+      # reported sample, which is what makes a *pushed* series (no scrape
+      # timestamp of its own) evaluable; max by (service_name) then collapses
+      # the status/route/method dimensions down to one series per service. The
+      # subquery step only bounds scan cost (60 points, not 240 at the 15s eval
+      # interval); the inner selector's 5m lookback means the first step after a
+      # sample still stamps it exactly, so the age is not rounded by the step.
+      # A pushed app that stops pushing but is still scraped
+      # stays visible here, and a scraped app whose counters freeze is caught
+      # even though its scrapes succeed.
+      #
+      # Caveat: the scrape jobs carry `service`, not `service_name` (that label
+      # comes from the OTLP resource), so scraped series group under
+      # service_name="". They still hold the rule's aggregate fresh, and their
+      # death is already covered by PlatformTargetDown/<Service>Down; only the
+      # pushed path gets a per-service name here.
+      - alert: ServiceTelemetryStale
+        expr: time() - max by (service_name) (last_over_time(timestamp({__name__=~".+_http_requests_total"})[1h:1m])) > 900
+        labels:
+          severity: warning
+          component: platform
+          service_name: "{{ $labels.service_name }}"
+        annotations:
+          summary: "No HTTP telemetry from {{ $labels.service_name }} for 15 minutes"
+          description: "{{ $labels.service_name }} last reported an *_http_requests_total sample {{ $value | printf \"%.0f\" }}s ago (> 15m). No traffic is reaching the pipeline: the exporter detached, the collector is dropping it, or the app is wedged. Covers scraped and pushed services alike."
+
       # Dead-man's switch. vector(1) is always true, so this alert is expected to
       # be firing permanently; it proves the Prometheus -> Alertmanager -> receiver
       # chain is alive. Silence it at the Alertmanager, never by deleting it.
