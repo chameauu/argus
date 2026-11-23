@@ -324,6 +324,8 @@ services:
       - ./configs/otel-collector:/etc/otelcol:ro
     ports:
         - "13133:13133"
+        - "4317:4317"
+        - "4318:4318"
     networks:
       - obs-net
     mem_limit: 256m

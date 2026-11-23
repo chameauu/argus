@@ -5,6 +5,11 @@ Ten checks per service, each PASS / FAIL / SKIP with quoted evidence:
   metrics_reachable, service_label, route_label, series_budget, series_integrity,
   healthz, otlp_traces, trace_id_log_format, log_continuity, descriptor
 
+One platform-level check runs before the per-service table:
+  otlp_metrics — push one OTLP/JSON gauge to the collector and require
+  Prometheus to store it. Scrape-based checks cannot see this: an OTLP push
+  can be rejected or dropped at the collector while every scrape stays green.
+
 Optional `metrics:` descriptors are verified against the scraped series inside the
 existing `descriptor` check (no extra check).
 
@@ -13,8 +18,8 @@ Usage:
       --service target-app=http://localhost:18000 \
       --service custom-exporter=http://localhost:19200 \
       --service webhook-receiver=http://localhost:18090 [--json] [--timeout 5] \
-      [--prometheus http://localhost:19090] [--services-dir services] \
-      [--max-log-gap 60]
+      [--prometheus http://localhost:19090] [--collector http://localhost:4318] \
+      [--services-dir services] [--max-log-gap 60]
 
 Exit code: 0 when every check is PASS or SKIP, 1 when any check FAILs.
 Standard library only.
@@ -29,6 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import asdict, dataclass
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
@@ -36,6 +42,10 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 TEMPO_URL = os.environ.get("ARGUS_TEMPO_URL", "http://localhost:13200").rstrip("/")
 LOKI_URL = os.environ.get("ARGUS_LOKI_URL", "http://localhost:13100").rstrip("/")
 DEFAULT_PROMETHEUS_URL = os.environ.get("ARGUS_PROMETHEUS_URL", "http://localhost:19090")
+DEFAULT_COLLECTOR_URL = os.environ.get("ARGUS_COLLECTOR_URL", "http://localhost:4318")
+OTLP_PROBE_METRIC = "argus_contract_probe"
+OTLP_PROBE_WINDOW_S = 20.0
+OTLP_PROBE_INTERVAL_S = 1.0
 
 # Runtime/client-library families are exempt from the series budget.
 EXEMPT_PREFIXES = ("go_", "python_", "process_", "promhttp_")
@@ -128,6 +138,76 @@ def describe_error(exc, timeout):
     return f"{type(reason).__name__}: {reason}"
 
 
+def post_otlp_metrics(collector, body, timeout):
+    """POST one OTLP/JSON payload. Return (status, body_text, elapsed_s, error)."""
+    started = time.monotonic()
+    request = urllib.request.Request(
+        f"{collector}/v1/metrics",
+        data=body.encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "argus-contract-check/v1",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", "replace")
+            return response.status, text, time.monotonic() - started, None
+    except urllib.error.HTTPError as exc:
+        try:
+            text = exc.read().decode("utf-8", "replace")
+        except Exception:
+            text = ""
+        return exc.code, text, time.monotonic() - started, None
+    except Exception as exc:
+        return None, "", time.monotonic() - started, describe_error(exc, timeout)
+
+
+def otlp_probe_body(probe):
+    """One gauge datapoint whose `probe` label makes the series unambiguous."""
+    payload = {
+        "resourceMetrics": [
+            {
+                "resource": {
+                    "attributes": [
+                        {
+                            "key": "service.name",
+                            "value": {"stringValue": "argus-contract-probe"},
+                        }
+                    ]
+                },
+                "scopeMetrics": [
+                    {
+                        "scope": {},
+                        "metrics": [
+                            {
+                                "name": OTLP_PROBE_METRIC,
+                                "unit": "1",
+                                "gauge": {
+                                    "dataPoints": [
+                                        {
+                                            "attributes": [
+                                                {
+                                                    "key": "probe",
+                                                    "value": {"stringValue": probe},
+                                                }
+                                            ],
+                                            "timeUnixNano": str(time.time_ns()),
+                                            "asInt": "1",
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    return json.dumps(payload)
+
+
 def parse_exposition(text):
     """Parse Prometheus text exposition into [(name, labels_dict)]."""
     samples = []
@@ -187,6 +267,48 @@ def prometheus_count(prometheus, query, timeout):
         return sum(float(sample["value"][1]) for sample in result), None
     except (ValueError, KeyError, TypeError) as exc:
         return None, f"prometheus response unreadable: {type(exc).__name__}"
+
+
+def check_otlp_metrics(collector, prometheus, timeout):
+    """Push one OTLP gauge; PASS only if Prometheus stores the series.
+
+    This is platform-level, not per-service: the collector's OTLP receiver and
+    its metrics pipeline are shared, so a metric dropped here is lost to every
+    service while each scrape still reports green.
+    """
+    probe = uuid.uuid4().hex[:8]
+    post_started = time.monotonic()
+    status, body, elapsed, error = post_otlp_metrics(collector, otlp_probe_body(probe), timeout)
+    if error:
+        detail = f"OTLP/HTTP POST {collector}/v1/metrics failed: {error}"
+        verdict = SKIP if "refused" in error.lower() else FAIL
+        return Result("otlp_metrics", verdict, detail)
+    if status != 200:
+        detail = f"OTLP/HTTP POST {collector}/v1/metrics -> HTTP {status} in {elapsed:.3f}s"
+        snippet = body[:100].strip()
+        if snippet:
+            detail += f": {snippet}"
+        return Result("otlp_metrics", FAIL, detail)
+
+    query = f'count({{__name__="{OTLP_PROBE_METRIC}",probe="{probe}"}})'
+    deadline = time.monotonic() + OTLP_PROBE_WINDOW_S
+    while time.monotonic() < deadline:
+        stored, query_error = prometheus_count(prometheus, query, min(timeout, 2.0))
+        if query_error:
+            return Result("otlp_metrics", FAIL, query_error)
+        if stored and stored >= 1:
+            waited = time.monotonic() - post_started
+            evidence = (
+                f'OTLP/HTTP 200, Prometheus stored {OTLP_PROBE_METRIC}{{probe="{probe}"}} '
+                f"({stored:g} series) after {waited:.1f}s"
+            )
+            return Result("otlp_metrics", PASS, evidence)
+        time.sleep(OTLP_PROBE_INTERVAL_S)
+    detail = (
+        f"OTLP/HTTP accepted (200) but no series in Prometheus after "
+        f"{OTLP_PROBE_WINDOW_S:g}s — the collector accepted a metric it will never store"
+    )
+    return Result("otlp_metrics", FAIL, detail)
 
 
 def check_service_label(name, prometheus, timeout):
@@ -920,7 +1042,12 @@ def tally(all_results):
     return total, passed, skipped, failed
 
 
-def print_report(bases, all_results):
+def print_report(bases, all_results, platform_results):
+    print("\nplatform  (shared)")
+    width = max(len(result.check) for result in platform_results)
+    for result in platform_results:
+        print(f"  {result.check:<{width}}  {result.verdict:<4}  {result.evidence}")
+
     for service, base in bases.items():
         results = all_results[service]
         print(f"\n{service}  ({base})")
@@ -966,6 +1093,11 @@ def main(argv=None):
         help=f"Prometheus base URL (default {DEFAULT_PROMETHEUS_URL})",
     )
     parser.add_argument(
+        "--collector",
+        default=DEFAULT_COLLECTOR_URL,
+        help=f"OTLP/HTTP collector base URL (default {DEFAULT_COLLECTOR_URL})",
+    )
+    parser.add_argument(
         "--services-dir",
         default="services",
         help="directory holding <name>.yaml descriptors (default services)",
@@ -995,6 +1127,12 @@ def main(argv=None):
         parser.error("--max-log-gap must be positive")
 
     prometheus = args.prometheus.rstrip("/")
+    collector = args.collector.rstrip("/")
+    try:
+        platform_results = [check_otlp_metrics(collector, prometheus, args.timeout)]
+    except Exception as exc:  # never traceback on an unexpected failure
+        platform_results = [Result("otlp_metrics", FAIL, f"{type(exc).__name__}: {exc}")]
+
     all_results = {}
     for name, base in bases.items():
         try:
@@ -1006,14 +1144,17 @@ def main(argv=None):
 
     failures = rank_failures(all_results)
     total, passed, skipped, failed = tally(all_results)
-    exit_code = 1 if failed else 0
+    platform_failed = any(result.verdict == FAIL for result in platform_results)
+    exit_code = 1 if failed or platform_failed else 0
 
     if args.json:
         payload = {
             "contract": "v1",
             "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "prometheus": prometheus,
+            "collector": collector,
             "services_dir": args.services_dir,
+            "platform": asdict(platform_results[0]),
             "services": {
                 name: {
                     "base_url": bases[name],
@@ -1039,7 +1180,7 @@ def main(argv=None):
         }
         print(json.dumps(payload, indent=2))
     else:
-        print_report(bases, all_results)
+        print_report(bases, all_results, platform_results)
 
     return exit_code
 
