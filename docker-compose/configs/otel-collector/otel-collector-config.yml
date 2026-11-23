@@ -1,5 +1,8 @@
-# OpenTelemetry Collector — OTLP in, Tempo out.
-# Kept deliberately minimal: this stack is the only consumer.
+# OpenTelemetry Collector — the single OTLP ingress for this stack.
+#
+# Any app that follows the contract only needs OTEL_EXPORTER_OTLP_ENDPOINT to
+# reach this process; the pipelines below fan its three signals out to Tempo,
+# Prometheus and Loki. Nothing here is per-service.
 receivers:
   otlp:
     protocols:
@@ -9,13 +12,48 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
-  batch: {}
+  # Bounded memory: the collector must shed load rather than be OOM-killed by
+  # a burst from one misbehaving application.
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 200
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: local
+        action: upsert
+      # Remote write maps `service.name` onto `job` and drops the remaining
+      # resource attributes, so the name is copied here as `service_name`.
+      # Dashboards and SLOs key on that label; `job` is the collector's own.
+      - key: service_name
+        from_attribute: service.name
+        action: insert
+
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
 
 exporters:
-  otlp:
+  otlp/tempo:
     endpoint: tempo:4317
     tls:
       insecure: true
+
+  # Metrics land in the same Prometheus the platform scrapes. The receiver is
+  # enabled by --web.enable-remote-write-receiver in compose. Without
+  # resource_to_telemetry_conversion the resource attributes never become
+  # series labels, and every pushed metric would collapse into one series.
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Loki 3.x native OTLP endpoint. Alloy already ships container *stdout* to
+  # Loki; this path carries logs pushed over OTLP, so an app that does both
+  # will appear twice. Prefer one mechanism per application.
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
 
 # The collector image is distroless (no shell, no curl/wget), so a Docker
 # HEALTHCHECK cannot exec inside it. This extension exposes a plain HTTP
@@ -30,5 +68,13 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/loki]

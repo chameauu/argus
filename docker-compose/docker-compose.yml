@@ -20,6 +20,10 @@ services:
       #   symptom (the labelkeep guard in the app jobs is the first line).
       - --storage.tsdb.retention.time=30d
       - --storage.tsdb.retention.size=2GB
+      # Accept OTLP metrics pushed by the collector's prometheusremotewrite
+      # exporter. Without this the collector's metrics pipeline 404s and every
+      # pushed metric is lost while the scrape path keeps working.
+      - --web.enable-remote-write-receiver
     volumes:
       - ./configs/prometheus:/etc/prometheus:ro
       - ../alert-rules:/etc/prometheus-rules:ro

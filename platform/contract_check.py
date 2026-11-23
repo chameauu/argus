@@ -182,8 +182,11 @@ def otlp_probe_body(probe):
                         "scope": {},
                         "metrics": [
                             {
+                                # No `unit`: the OTLP→Prometheus translation
+                                # appends the UCUM suffix, so unit "1" renders
+                                # the series as "..._ratio" and an exact-name
+                                # query would miss data that did land.
                                 "name": OTLP_PROBE_METRIC,
-                                "unit": "1",
                                 "gauge": {
                                     "dataPoints": [
                                         {
@@ -290,7 +293,9 @@ def check_otlp_metrics(collector, prometheus, timeout):
             detail += f": {snippet}"
         return Result("otlp_metrics", FAIL, detail)
 
-    query = f'count({{__name__="{OTLP_PROBE_METRIC}",probe="{probe}"}})'
+    # Tolerate a unit suffix: the exporter is free to render `foo` as
+    # `foo_ratio`/`foo_total`. The `probe` label is what proves this run landed.
+    query = f'count({{__name__=~"{OTLP_PROBE_METRIC}.*",probe="{probe}"}})'
     deadline = time.monotonic() + OTLP_PROBE_WINDOW_S
     while time.monotonic() < deadline:
         stored, query_error = prometheus_count(prometheus, query, min(timeout, 2.0))
