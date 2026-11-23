@@ -25,7 +25,10 @@ Usage:
   python3 platform/generate.py [--services-dir services] [--out .] [--check]
 
 ``--check`` renders into a temporary directory and compares bytes with the
-tree. Exit 0 means no drift; exit 1 prints a per-file summary.
+tree. Exit 0 means no drift; exit 1 prints a per-file summary (including a
+build-based compose service with no descriptor). An unparseable or invalid
+descriptor is reported and skipped: the remaining services still render, and
+the run exits 2 so the broken file cannot pass silently.
 
 Standard library only. Output is deterministic: sorted services, LF endings,
 no timestamps, no absolute paths. Sloth's output embeds only its build hash,
@@ -74,6 +77,29 @@ GENERATED_FILE_MARKERS = {
 # Keep the rendered scrape_configs stable across runs.
 NAME_PART_RE = re.compile(r"[-_.]+")
 
+# The compose service block is still hand-edited, so --check treats a
+# build-based compose service with no descriptor as drift. Names here are the
+# genuinely platform-owned services; custom-exporter and webhook-receiver are
+# application services (they have descriptors), so they are intentionally
+# absent and deleting either descriptor must surface as drift.
+COMPOSE_FILE = "docker-compose/docker-compose.yml"
+PLATFORM_COMPOSE_SERVICES = frozenset(
+    {
+        "prometheus",
+        "loki",
+        "grafana",
+        "tempo",
+        "alertmanager",
+        "alloy",
+        "otel-collector",
+        "node-exporter",
+        "load-generator",
+    }
+)
+COMPOSE_SERVICE_RE = re.compile(r"^ {2}([A-Za-z0-9][A-Za-z0-9._-]*):\s*(?:#.*)?$")
+COMPOSE_BUILD_RE = re.compile(r"^ {4}build:")
+COMPOSE_SERVICES_RE = re.compile(r"^services:\s*(?:#.*)?$")
+
 
 class GenerateError(RuntimeError):
     """A descriptor or template is unusable; the run must fail loudly."""
@@ -99,23 +125,33 @@ def format_percent(value):
 
 
 def load_services(services_dir):
+    """Parse and validate every descriptor, isolating per-file failures.
+
+    Returns ``(valid_services, errors)``: one bad descriptor is reported but
+    does not prevent the remaining services from rendering.
+    """
     directory = Path(services_dir)
     paths = sorted(directory.glob("*.yaml"))
     if not paths:
         raise GenerateError(f"no descriptors in {directory}")
     services = []
+    errors = []
     for path in paths:
         name = path.stem
         try:
             data = parse_descriptor(path.read_text(encoding="utf-8"))
         except (OSError, YamlError) as exc:
-            raise GenerateError(f"{path}: unparseable: {exc}") from exc
+            errors.append(f"{path}: unparseable: {exc}")
+            continue
         problems = validate_descriptor(data, name)
         if problems:
             details = "; ".join(problems[:8])
-            raise GenerateError(f"{path}: invalid descriptor: {details}")
+            if len(problems) > 8:
+                details += f"; … (+{len(problems) - 8} more)"
+            errors.append(f"{path}: invalid descriptor: {details}")
+            continue
         services.append((name, data))
-    return services
+    return services, errors
 
 
 def format_objective(value):
@@ -379,14 +415,56 @@ def remove_orphans(rendered, out_dir):
         print(f"removed orphan {relative}")
 
 
-def write_all(rendered, out_dir):
+def write_all(rendered, out_dir, prune=True):
     root = Path(out_dir)
     for relative, content in rendered.items():
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content.encode("utf-8"))
         print(f"wrote {relative} ({len(content)} bytes)")
-    remove_orphans(rendered, out_dir)
+    if prune:
+        remove_orphans(rendered, out_dir)
+
+
+def compose_build_services(compose_path):
+    """Names of ``build:``-based services in the compose ``services:`` block.
+
+    A stdlib line scan is deliberate: the platform has no YAML dependency and
+    only needs the service-name/build pairs, not the whole document.
+    """
+    path = Path(compose_path)
+    if not path.is_file():
+        return set()
+    names = set()
+    in_services = False
+    current = None
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if not raw[0].isspace():
+            in_services = bool(COMPOSE_SERVICES_RE.match(raw))
+            current = None
+            continue
+        if not in_services:
+            continue
+        service = COMPOSE_SERVICE_RE.match(raw)
+        if service:
+            current = service.group(1)
+            continue
+        if current and COMPOSE_BUILD_RE.match(raw):
+            names.add(current)
+    return names
+
+
+def compose_drift(services_dir, out_dir):
+    """Build-based compose services that no longer have a descriptor."""
+    described = {path.stem for path in Path(services_dir).glob("*.yaml")}
+    drift = []
+    for name in sorted(compose_build_services(Path(out_dir) / COMPOSE_FILE)):
+        if name in described or name in PLATFORM_COMPOSE_SERVICES:
+            continue
+        drift.append(f"ORPHAN compose service {name} (no descriptor)")
+    return drift
 
 
 def diff_summary(relative, expected, actual):
@@ -397,7 +475,7 @@ def diff_summary(relative, expected, actual):
     return f"CHANGED {relative} (+{added}/-{removed} lines vs rendered)"
 
 
-def check_all(temp_dir, out_dir, relative_paths):
+def check_all(temp_dir, out_dir, relative_paths, services_dir="services", check_orphans=True):
     temp_root = Path(temp_dir)
     root = Path(out_dir)
     drift = []
@@ -416,9 +494,15 @@ def check_all(temp_dir, out_dir, relative_paths):
             drift.append(diff_summary(relative, expected, actual))
     # A descriptor that was deleted leaves generated artefacts behind. The
     # prometheus.yml rule_files glob would keep loading those rules, so an
-    # orphan is drift even though no rendered file differs.
-    for relative in sorted(generated_files(root) - set(relative_paths)):
-        drift.append(f"ORPHAN {relative} (generated, no descriptor)")
+    # orphan is drift even though no rendered file differs. When a descriptor
+    # failed validation, its artefacts are not orphans: the service still
+    # exists and pruning them would turn a typo into data loss.
+    if check_orphans:
+        for relative in sorted(generated_files(root) - set(relative_paths)):
+            drift.append(f"ORPHAN {relative} (generated, no descriptor)")
+    # The compose block is outside the generator, so a build-based app whose
+    # descriptor was deleted would keep running and being scraped.
+    drift.extend(compose_drift(services_dir, out_dir))
     if drift:
         print(f"generate: {len(drift)} drift item(s)")
         for line in drift:
@@ -444,7 +528,24 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        services = load_services(args.services_dir)
+        services, errors = load_services(args.services_dir)
+    except GenerateError as exc:
+        print(f"generate: {exc}", file=sys.stderr)
+        return 2
+
+    for error in errors:
+        print(f"generate: {error}", file=sys.stderr)
+    if not services:
+        print("generate: no valid descriptors; nothing rendered", file=sys.stderr)
+        return 2
+    if errors:
+        print(
+            f"generate: {len(errors)} invalid descriptor(s); "
+            f"continuing with {len(services)} valid service(s)",
+            file=sys.stderr,
+        )
+
+    try:
         rendered = render_all(services)
     except GenerateError as exc:
         print(f"generate: {exc}", file=sys.stderr)
@@ -453,10 +554,17 @@ def main(argv=None):
     if args.check:
         with tempfile.TemporaryDirectory(prefix="argus-generate-") as temp_dir:
             write_all_to_temp(rendered, temp_dir)
-            return check_all(temp_dir, args.out, rendered.keys())
+            status = check_all(
+                temp_dir,
+                args.out,
+                rendered.keys(),
+                services_dir=args.services_dir,
+                check_orphans=not errors,
+            )
+        return 2 if errors else status
 
-    write_all(rendered, args.out)
-    return 0
+    write_all(rendered, args.out, prune=not errors)
+    return 2 if errors else 0
 
 
 def write_all_to_temp(rendered, temp_dir):

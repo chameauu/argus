@@ -136,13 +136,23 @@ jobs:
 
       # Traces and logs need a few scrape intervals to appear in Tempo/Loki, so
       # retry before declaring the contract failed.
-      - name: Contract v1 against the three demo services
+      - name: Contract v1 against every service descriptor
         run: |
+          args=()
+          for descriptor in services/*.yaml; do
+            name="$(basename "$descriptor" .yaml)"
+            port="$(python3 -c 'import sys; sys.path.insert(0, "platform"); from contract_check import parse_descriptor; print(parse_descriptor(open(sys.argv[1], encoding="utf-8").read())["scrape"]["port"])' "$descriptor")"
+            host_port="$(docker compose -f docker-compose/docker-compose.yml \
+              port "$name" "$port" 2>/dev/null | awk -F: 'END {print $NF}')" || true
+            if [ -z "$host_port" ]; then
+              echo "no published host port for $name (scrape.port $port); is it in compose?" >&2
+              exit 1
+            fi
+            args+=("--service" "$name=http://localhost:$host_port")
+          done
+          printf 'contract targets:'; printf ' %s' "${args[@]}"; echo
           for i in $(seq 1 10); do
-            if python3 platform/contract_check.py \
-              --service target-app=http://localhost:18000 \
-              --service custom-exporter=http://localhost:19200 \
-              --service webhook-receiver=http://localhost:18090 \
+            if python3 platform/contract_check.py "${args[@]}" \
               --prometheus http://localhost:19090; then
               exit 0
             fi

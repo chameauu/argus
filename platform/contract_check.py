@@ -75,6 +75,21 @@ DESCRIPTOR_OPTIONAL_KEYS = ("metrics",)
 DESCRIPTOR_TOP_KEYS = DESCRIPTOR_REQUIRED_KEYS + DESCRIPTOR_OPTIONAL_KEYS
 METRIC_NAME_RE = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
 ROUTE_LABELS = ("route", "endpoint")
+# Liveness, scrape and API-doc endpoints are platform traffic, not application
+# routes, so they never need to appear in a descriptor's routes_allowlist.
+INFRASTRUCTURE_ROUTES = frozenset(
+    {"/health", "/healthz", "/metrics", "/openapi.json", "/docs", "/redoc", "unmatched"}
+)
+# Control-plane endpoints (fault injection, overrides) are operator traffic. They
+# are excluded from the allowlist comparison for the same reason as the routes
+# above, and deliberately NOT added to descriptors: routes_allowlist also filters
+# the latency SLI, so listing them would pull control traffic into the SLO.
+CONTROL_ROUTE_PREFIXES = ("/admin/",)
+
+
+def is_infrastructure_route(value: str) -> bool:
+    """True for liveness, scrape, API-doc and control-plane routes."""
+    return value in INFRASTRUCTURE_ROUTES or value.startswith(CONTROL_ROUTE_PREFIXES)
 
 
 class YamlError(ValueError):
@@ -211,20 +226,33 @@ def looks_like_raw_id(value):
     return False
 
 
-def check_route_label(samples):
+def normalise_route(value):
+    """Normalise a route for comparison without erasing its template shape.
+
+    Trailing slashes are cosmetic; `/orders/{id}` and `/orders/{order_id}` stay
+    distinct because the template parameter name is part of the contract.
+    """
+    value = value.strip()
+    if len(value) > 1:
+        value = value.rstrip("/")
+    return value or "/"
+
+
+def check_route_label(samples, allowlist=None, descriptor_error=None, declared_label=None):
     if samples is None:
         return Result("route_label", FAIL, "GET /metrics unavailable; route label not evaluable")
 
-    label_names = [
-        key
-        for key in ("route", "endpoint")
-        if any("status" in labels and key in labels for _, labels in samples)
-    ]
-    if not label_names:
+    present = {
+        key for _, labels in samples if "status" in labels for key in ROUTE_LABELS if key in labels
+    }
+    if declared_label in present:
+        label = declared_label
+    elif present:
+        label = sorted(present)[0]
+    else:
         detail = "no request counter carries both a status label and a route/endpoint label"
         return Result("route_label", FAIL, detail)
 
-    label = label_names[0]
     series = [(n, labels) for n, labels in samples if "status" in labels and label in labels]
     values = sorted({labels[label] for _, labels in series})
     names = sorted({n for n, _ in series})
@@ -239,9 +267,33 @@ def check_route_label(samples):
     if len(values) > ROUTE_VALUE_LIMIT:
         evidence = f"{len(values)} distinct values exceed {ROUTE_VALUE_LIMIT}: {evidence}"
         return Result("route_label", FAIL, evidence)
-    offenders = [value for value in values if looks_like_raw_id(value)]
-    if offenders:
-        return Result("route_label", FAIL, f"raw-ID route value(s): {', '.join(offenders[:3])}")
+
+    if descriptor_error or not isinstance(allowlist, list):
+        detail = descriptor_error or "descriptor has no usable routes_allowlist"
+        return Result("route_label", FAIL, f"{detail}; route values cannot be checked")
+    allowed = {
+        normalise_route(route) for route in allowlist if isinstance(route, str) and route.strip()
+    }
+    allowed |= INFRASTRUCTURE_ROUTES
+    uncovered = [
+        value
+        for value in values
+        if not is_infrastructure_route(normalise_route(value))
+        and normalise_route(value) not in allowed
+    ]
+    if uncovered:
+        raw = [value for value in uncovered if looks_like_raw_id(value)]
+        detail = f"{len(uncovered)} observed route value(s) not in routes_allowlist: "
+        detail += ", ".join(uncovered[:6])
+        if len(uncovered) > 6:
+            detail += f", … (+{len(uncovered) - 6} more)"
+        if raw:
+            detail += f" (raw ID: {', '.join(raw[:3])})"
+        detail += f"; allowlist: {', '.join(sorted(allowed - INFRASTRUCTURE_ROUTES)) or 'empty'}"
+        return Result("route_label", FAIL, detail)
+    evidence += (
+        "; all values covered by routes_allowlist (or infrastructure/control-plane routes)"
+    )
     return Result("route_label", PASS, evidence)
 
 
@@ -692,15 +744,23 @@ def _metric_observed(name, sample_names):
     return any(sample == name or sample.startswith(name + "_") for sample in sample_names)
 
 
-def check_descriptor(name, services_dir, samples=None):
+def read_descriptor(name, services_dir):
+    """Return (data or None, error string or None) for one descriptor."""
     path = os.path.join(services_dir, f"{name}.yaml")
     if not os.path.isfile(path):
-        return Result("descriptor", FAIL, f"no descriptor: {path}")
+        return None, f"no descriptor: {path}"
     try:
         with open(path, encoding="utf-8") as handle:
-            data = parse_descriptor(handle.read())
+            return parse_descriptor(handle.read()), None
     except (OSError, YamlError) as exc:
-        return Result("descriptor", FAIL, f"{path}: unparseable: {exc}")
+        return None, f"{path}: unparseable: {exc}"
+
+
+def check_descriptor(name, services_dir, samples=None):
+    path = os.path.join(services_dir, f"{name}.yaml")
+    data, error = read_descriptor(name, services_dir)
+    if error:
+        return Result("descriptor", FAIL, error)
     problems = validate_descriptor(data, name)
     if problems:
         evidence = f"{path}: {len(problems)} problem(s): " + "; ".join(problems[:8])
@@ -734,9 +794,15 @@ def check_descriptor(name, services_dir, samples=None):
 
 def run_service(name, base, timeout, prometheus, services_dir, max_log_gap):
     metrics_result, samples = check_metrics_reachable(base, timeout)
+    descriptor, descriptor_error = read_descriptor(name, services_dir)
+    allowlist = descriptor.get("routes_allowlist") if isinstance(descriptor, dict) else None
+    metrics = descriptor.get("metrics") if isinstance(descriptor, dict) else None
+    declared_label = None
+    if isinstance(metrics, dict):
+        declared_label = metrics.get("route_label")
     results = [metrics_result]
     results.append(check_service_label(name, prometheus, timeout))
-    results.append(check_route_label(samples))
+    results.append(check_route_label(samples, allowlist, descriptor_error, declared_label))
     results.append(check_series_budget(samples))
     results.append(check_healthz(base, timeout))
     results.append(check_otlp_traces(name, timeout))

@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# Run the generated rule unit tests with `promtool test rules`.
+# Run the rule gates: the stdlib route-regex golden test, then the generated
+# rule unit tests with `promtool test rules`.
 #
-# The tests live in platform/tests/*.yml and reference ../../alert-rules/generated
-# relative to the test file. The whole repository is mounted read-only at
-# /workspace so that resolution works unchanged inside the pinned Prometheus
-# image. This is an offline gate: it needs a container runtime, not the stack.
+# The promtool tests live in platform/tests/*.yml and reference
+# ../../alert-rules/generated relative to the test file. The whole repository is
+# mounted read-only at /workspace so that resolution works unchanged inside the
+# pinned Prometheus image. This is an offline gate: it needs a container
+# runtime, not the stack.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="${PROMTOOL_IMAGE:-prom/prometheus:v2.53.0}"
+
+# Golden tests for the generator's route-regex escaping run first: they are
+# stdlib-only and catch the `{id}` regression without a container runtime.
+python3 "$repo_root/platform/tests/test_routes_regex.py"
 
 shopt -s nullglob
 tests=("$repo_root"/platform/tests/*.yml)
