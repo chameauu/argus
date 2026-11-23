@@ -14,7 +14,7 @@ service scraped at `custom-exporter:9200/metrics` every 15s. Its latency SLO cov
 - **Metrics:** counter `custom_exporter_http_requests_total`, histogram `webhook_delivery_duration_seconds` (label `route`).
 
 ## First three diagnostic steps
-1. Open the generated dashboard: [dashboards/generated/red-custom-exporter.json](../../dashboards/generated/red-custom-exporter.json).
+1. Open the service dashboard: [Argus — Service filtered to custom-exporter](/d/argus-service?var-service=custom-exporter).
 2. Query Loki for `{compose_service="custom-exporter"}` over the last 15 minutes and look for errors
    around the first failing timestamp.
 3. Copy a `trace_id=<32 lowercase hex>` from a Loki line into Tempo to find the failing span.

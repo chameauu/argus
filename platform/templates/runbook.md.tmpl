@@ -14,7 +14,7 @@ $route_count route(s): $routes.
 - **Metrics:** counter `$requests_metric`, histogram `$latency_metric` (label `$route_label`).
 
 ## First three diagnostic steps
-1. Open the generated dashboard: [dashboards/generated/red-$name.json](../../dashboards/generated/red-$name.json).
+1. Open the service dashboard: [Argus — Service filtered to $name](/d/argus-service?var-service=$name).
 2. Query Loki for `{compose_service="$name"}` over the last 15 minutes and look for errors
    around the first failing timestamp.
 3. Copy a `trace_id=<32 lowercase hex>` from a Loki line into Tempo to find the failing span.

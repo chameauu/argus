@@ -56,7 +56,7 @@ runbook: runbooks/generated/foreign-app.md
 | Scrape jobs (whole file) | `docker-compose/configs/prometheus/prometheus.yml` |
 | RED alerts | `alert-rules/generated/red-<name>.yml` |
 | SLO recording + burn-rate rules (via Sloth) | `alert-rules/generated/slo-<name>.yml` |
-| RED dashboard | `dashboards/generated/red-<name>.json` |
+| RED dashboard (templated for all services) | `dashboards/argus-service.json` |
 | Runbook stub | `runbooks/generated/<name>.md` |
 
 Generated files carry a do-not-edit header and are never hand-edited. Three gates keep that true:

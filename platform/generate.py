@@ -11,7 +11,6 @@ Generated:
   alert-rules/generated/red-<name>.yml                RED rules
   alert-rules/generated/slo-<name>.yml                Sloth SLO rules
   runbooks/generated/<name>.md                        runbook stub
-  dashboards/generated/red-<name>.json                per-service RED dashboard
 
 The SLO rules are produced by running the pinned Sloth image over a spec
 rendered from the descriptor. Sloth's ``validate`` runs as a gate before
@@ -36,7 +35,6 @@ which the pinned digest fixes.
 """
 
 import argparse
-import json
 import re
 import shutil
 import subprocess
@@ -66,6 +64,10 @@ SLOTH_TIMEOUT_S = 180
 GENERATED_FILE_PATTERNS = {
     RULES_DIR: re.compile(r"^(?:red|slo)-[A-Za-z0-9._-]+\.yml$"),
     RUNBOOKS_DIR: re.compile(r"^[A-Za-z0-9._-]+\.md$"),
+    # Per-service RED dashboards were retired in favour of the hand-authored
+    # ``dashboards/argus-service.json``. No dashboard is rendered any more, but
+    # the ownership rule stays so a stale copy of a retired dashboard is pruned
+    # instead of lingering in the provisioned directory.
     DASHBOARDS_DIR: re.compile(r"^red-[A-Za-z0-9._-]+\.json$"),
 }
 GENERATED_FILE_MARKERS = {
@@ -343,17 +345,6 @@ def render_slo_rules(name, data):
     return sloth_generate(name, data)
 
 
-def render_red_dashboard(name, data):
-    context = service_context(name, data)
-    body = read_template("red-dashboard.json.tmpl").substitute(context)
-    # Fail here rather than in Grafana if a substituted value broke the JSON.
-    try:
-        json.loads(body)
-    except ValueError as exc:
-        raise GenerateError(f"{name}: rendered dashboard is not valid JSON: {exc}") from exc
-    return body.rstrip("\n") + "\n"
-
-
 def render_all(services):
     rendered = {PROMETHEUS_OUTPUT: render_prometheus(services)}
     needs_sloth = any(data.get("metrics") for _, data in services)
@@ -364,7 +355,6 @@ def render_all(services):
         rendered[f"{RUNBOOKS_DIR}/{name}.md"] = render_runbook(name, data)
         if data.get("metrics"):
             rendered[f"{RULES_DIR}/slo-{name}.yml"] = render_slo_rules(name, data)
-            rendered[f"{DASHBOARDS_DIR}/red-{name}.json"] = render_red_dashboard(name, data)
     return dict(sorted(rendered.items()))
 
 

@@ -1,27 +1,21 @@
 # Generated dashboards — do not edit by hand
 
-Everything in this directory is either **rendered** by `platform/generate.py` or
-**vendored** from an upstream project. Hand edits are thrown away on the next
-regeneration and `python3 platform/generate.py --check` fails on drift for the
-rendered files.
+`slo-overview.json` in this directory is **vendored** from an upstream project
+(see below). It is not rendered or diffed by `platform/generate.py`; treat it as
+read-only and change it only when re-vendoring a new upstream revision.
 
-## Rendered
+Per-service RED dashboards (`red-<name>.json`) were retired: every service is
+now covered by the single templated `../argus-service.json` (uid
+`argus-service`), filtered through its `service` variable. `generate.py` still
+treats a leftover `red-<name>.json` as an orphan it owns, so a stale copy is
+pruned rather than left in the provisioned directory.
 
-| File | Source |
-|---|---|
-| `red-<name>.json` | `platform/templates/red-dashboard.json.tmpl` + `services/<name>.yaml` |
-
-Regenerate with:
+Regenerate the platform artefacts with:
 
 ```bash
 python3 platform/generate.py
 python3 platform/generate.py --check   # exit 0 = tree matches the descriptor render
 ```
-
-Each `red-<name>.json` has uid `argus-red-<name>` and carries the service's RED
-signals (request rate by route, 5xx ratio, p99 latency by route, `up`) plus the
-current Sloth burn rate for both of its SLOs. Grafana provisions them through
-`docker-compose/configs/grafana/provisioning/dashboards/generated.yml`.
 
 ## Vendored
 

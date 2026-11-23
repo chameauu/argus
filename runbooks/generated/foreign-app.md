@@ -14,7 +14,7 @@ service scraped at `foreign-app:8099/metrics` every 15s. Its latency SLO covers
 - **Metrics:** counter `orders_http_requests_total`, histogram `orders_http_request_duration_seconds` (label `route`).
 
 ## First three diagnostic steps
-1. Open the generated dashboard: [dashboards/generated/red-foreign-app.json](../../dashboards/generated/red-foreign-app.json).
+1. Open the service dashboard: [Argus — Service filtered to foreign-app](/d/argus-service?var-service=foreign-app).
 2. Query Loki for `{compose_service="foreign-app"}` over the last 15 minutes and look for errors
    around the first failing timestamp.
 3. Copy a `trace_id=<32 lowercase hex>` from a Loki line into Tempo to find the failing span.
