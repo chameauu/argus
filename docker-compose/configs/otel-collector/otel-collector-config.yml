@@ -23,12 +23,16 @@ processors:
       - key: deployment.environment
         value: local
         action: upsert
-      # Do NOT copy service.name into a `service_name` attribute here.
-      # The remote-write exporter already converts the resource attribute to a
-      # `service_name` label (and service.name to `job`); inserting a copy of
-      # our own makes the exporter emit both, and the duplicate is joined with
-      # ";" — measured as service_name="probe-x;probe-x" before this was
-      # removed. One attribute, one label.
+      # One identity label on both ingestion paths. Prometheus stamps `service`
+      # on every scraped app series; a pushed OTLP app gets the same label here
+      # from its resource attribute, so one dashboard, one SLO and one staleness
+      # rule can see scraped and pushed services alike. (The remote-write
+      # exporter also derives `service_name` and `job` on its own — do not copy
+      # those by hand; a duplicate attribute is joined with ";" and renders as
+      # service_name="probe-x;probe-x".)
+      - key: service
+        from_attribute: service.name
+        action: insert
 
   # An OTLP app that omits service.name lands as an unattributable resource:
   # every series it pushes is anonymous, and no per-service rule, SLO or

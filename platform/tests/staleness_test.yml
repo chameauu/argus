@@ -18,7 +18,7 @@ tests:
   # the 900s threshold. Must fire.
   - interval: 1m
     input_series:
-      - series: 'target_app_http_requests_total{service_name="stale-app",status="200"}'
+      - series: 'target_app_http_requests_total{service="stale-app",status="200"}'
         values: '0+1x19'
     alert_rule_test:
       - eval_time: 39m
@@ -27,7 +27,7 @@ tests:
           - exp_labels:
               severity: warning
               component: platform
-              service_name: stale-app
+              service: stale-app
             exp_annotations:
               summary: "No HTTP telemetry from stale-app for 15 minutes"
               description: 'stale-app last reported an *_http_requests_total sample 1200s ago (> 15m). No traffic is reaching the pipeline: the exporter detached, the collector is dropping it, or the app is wedged. Covers scraped and pushed services alike.'
@@ -36,7 +36,7 @@ tests:
   # Traffic is live; must not fire.
   - interval: 1m
     input_series:
-      - series: 'target_app_http_requests_total{service_name="live-app",status="200"}'
+      - series: 'target_app_http_requests_total{service="live-app",status="200"}'
         values: '0+1x37'
     alert_rule_test:
       - eval_time: 39m

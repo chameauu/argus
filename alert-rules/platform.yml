@@ -138,20 +138,20 @@ groups:
       # stays visible here, and a scraped app whose counters freeze is caught
       # even though its scrapes succeed.
       #
-      # Caveat: the scrape jobs carry `service`, not `service_name` (that label
-      # comes from the OTLP resource), so scraped series group under
-      # service_name="". They still hold the rule's aggregate fresh, and their
-      # death is already covered by PlatformTargetDown/<Service>Down; only the
-      # pushed path gets a per-service name here.
+      # Grouped by `service`, which both paths carry: Prometheus stamps it on
+      # scraped series via metric_relabel_configs, and the collector copies it
+      # from the OTLP resource attribute for pushed series. A scraped app that
+      # dies is also caught by PlatformTargetDown, but grouping here means the
+      # same rule covers a pushed app that has no `up` series at all.
       - alert: ServiceTelemetryStale
-        expr: time() - max by (service_name) (last_over_time(timestamp({__name__=~".+_http_requests_total"})[1h:1m])) > 900
+        expr: time() - max by (service) (last_over_time(timestamp({__name__=~".+_http_requests_total"})[1h:1m])) > 900
         labels:
           severity: warning
           component: platform
-          service_name: "{{ $labels.service_name }}"
+          service: "{{ $labels.service }}"
         annotations:
-          summary: "No HTTP telemetry from {{ $labels.service_name }} for 15 minutes"
-          description: "{{ $labels.service_name }} last reported an *_http_requests_total sample {{ $value | printf \"%.0f\" }}s ago (> 15m). No traffic is reaching the pipeline: the exporter detached, the collector is dropping it, or the app is wedged. Covers scraped and pushed services alike."
+          summary: "No HTTP telemetry from {{ $labels.service }} for 15 minutes"
+          description: "{{ $labels.service }} last reported an *_http_requests_total sample {{ $value | printf \"%.0f\" }}s ago (> 15m). No traffic is reaching the pipeline: the exporter detached, the collector is dropping it, or the app is wedged. Covers scraped and pushed services alike."
 
       # Dead-man's switch. vector(1) is always true, so this alert is expected to
       # be firing permanently; it proves the Prometheus -> Alertmanager -> receiver
