@@ -161,6 +161,14 @@ jobs:
           done
           exit 1
 
+      # A container reads its mounted config once, at start. Editing the file
+      # without restarting leaves the stack serving the old config while the
+      # repository claims otherwise -- which is how spanmetrics lived only in a
+      # running container for an hour. This gate runs *after* the stack is up so
+      # it compares the running containers against the committed files.
+      - name: Running config matches the committed config
+        run: python3 platform/config_parity.py
+
       - name: Stop the demo stack
         if: always()
         run: docker compose -f docker-compose/docker-compose.yml down -v

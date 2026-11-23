@@ -31,4 +31,10 @@ done
 printf 'contract targets:'
 printf ' %s' "${args[@]}"
 echo
+
+# Gate 0: the running containers must be running the committed config files.
+# Without this, a check can pass against a container that is serving a config
+# nobody reviewed, which is how spanmetrics lived only in memory for an hour.
+python3 platform/config_parity.py
+
 exec python3 platform/contract_check.py "${args[@]}" --prometheus "$prometheus"

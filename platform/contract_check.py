@@ -5,13 +5,16 @@ Ten checks per service, each PASS / FAIL / SKIP with quoted evidence:
   metrics_reachable, service_label, route_label, series_budget, series_integrity,
   healthz, otlp_traces, trace_id_log_format, log_continuity, descriptor
 
-Two platform-level checks run before the per-service table:
+Three platform-level checks run before the per-service table:
   otlp_metrics — push one OTLP/JSON gauge to the collector and require
   Prometheus to store it. Scrape-based checks cannot see this: an OTLP push
   can be rejected or dropped at the collector while every scrape stays green.
   otlp_service_name — push the same gauge without a resource service.name and
   require Prometheus to store nothing. The collector drops unattributed
   datapoints but still answers 200, so only the store proves the drop.
+  span_metrics — require span-derived RED to exist. It is the only curation
+  source that needs no metric-name convention, and it vanished once when the
+  connector lived in a running container instead of the committed config.
 
 Optional `metrics:` descriptors are verified against the scraped series inside the
 existing `descriptor` check (no extra check).
@@ -318,6 +321,33 @@ def check_otlp_metrics(collector, prometheus, timeout):
         f"{OTLP_PROBE_WINDOW_S:g}s — the collector accepted a metric it will never store"
     )
     return Result("otlp_metrics", FAIL, detail)
+
+
+def check_span_metrics(collector, prometheus, timeout):
+    """Span-derived RED must exist, because it is the only source that needs no naming convention.
+
+    This is the gate for the failure that motivated it: the spanmetrics connector
+    lived in a running container while being absent from the committed config, so a
+    clean `docker compose up` silently removed the tier. In CI the stack boots from
+    the committed files, so a missing connector makes this check fail rather than
+    leaving a silent gap. An empty store still fails: with the load generator
+    running there is always traffic.
+    """
+    query = "count by (service)(spanmetrics_calls_total)"
+    series = prometheus_series(prometheus, query, timeout)
+    if not series:
+        return Result(
+            "span_metrics",
+            FAIL,
+            "no spanmetrics_calls_total series: the collector is not deriving RED from spans "
+            "(is the spanmetrics connector in the committed config and the container restarted?)",
+        )
+    services = sorted(item.get("metric", {}).get("service", "?") for item in series)
+    return Result(
+        "span_metrics",
+        PASS,
+        f"span-derived RED present for {len(services)} service(s): {', '.join(services)}",
+    )
 
 
 def prometheus_series(prometheus, query, timeout):
@@ -1206,6 +1236,7 @@ def main(argv=None):
     for check, runner in (
         ("otlp_metrics", check_otlp_metrics),
         ("otlp_service_name", check_otlp_service_name),
+        ("span_metrics", check_span_metrics),
     ):
         try:
             platform_results.append(runner(collector, prometheus, args.timeout))
