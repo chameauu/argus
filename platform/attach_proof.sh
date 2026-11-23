@@ -16,7 +16,7 @@ service="${2:-demo-attach}"
 container="attach-proof-$$"
 prom="${PROM_URL:-http://localhost:19090}"
 tempo="${TEMPO_URL:-http://localhost:13200}"
-loki="${LOKI_URL:-http://localhost:3100}"
+loki="${LOKI_URL:-http://localhost:13100}"
 
 fail() {
 	echo "FAIL: $*"
