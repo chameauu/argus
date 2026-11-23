@@ -11,6 +11,42 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+# Span-derived RED metrics. A connector is both an exporter of spans and a
+# receiver of metrics: it consumes the spans already flowing to Tempo and
+# synthesises request rate, error ratio and latency series from them. That is
+# what lets an application with no metric-naming convention (no
+# `*_http_requests_total` counter) still get RED panels: the only thing it
+# must do is emit traces with a service.name, which the contract requires.
+#
+# `namespace` prefixes every generated metric (`spanmetrics_calls_total`,
+# `spanmetrics_duration_milliseconds_bucket`) so they cannot collide with an
+# app's own counters. `dimensions` are span attributes copied onto the
+# generated series; the connector always adds `service.name` (resource),
+# `span.name`, `span.kind` and `status.code`. The remote-write exporter
+# sanitises dots to underscores, so these land as http_request_method,
+# http_route, status_code.
+#
+# `status.code` is NOT listed below: v0.109.0 adds it unconditionally and
+# rejects it as a duplicate dimension. It is still present as `status_code` on
+# every generated series, which is what the error-ratio panel filters on.
+#
+# Our apps currently instrument with semconv 1.27-era libraries and emit
+# `http.method`, not `http.request.method`; that dimension is therefore empty
+# for them and populated only by modern-semconv apps. `http.route` is present
+# on both FastAPI and Flask spans and is the useful grouping label.
+connectors:
+  spanmetrics:
+    namespace: spanmetrics
+    metrics_flush_interval: 15s
+    dimensions:
+      - name: http.request.method
+      - name: http.route
+      # Portability for apps whose SDK leaves span status UNSET on a 5xx response.
+      # Our Python instrumentation does set STATUS_CODE_ERROR on 5xx (measured:
+      # injecting errors moves the ratio), but that is an SDK behaviour, not a
+      # guarantee, so the HTTP status is carried as a dimension as well.
+      - name: http.status_code
+
 processors:
   # Bounded memory: the collector must shed load rather than be OOM-killed by
   # a burst from one misbehaving application.
@@ -99,9 +135,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource, filter/drop-unattributed, batch]
-      exporters: [otlp/tempo]
+      # `spanmetrics` is a connector: traces leave here without reaching Tempo
+      # twice, and the connector's output re-enters the metrics pipeline below.
+      exporters: [otlp/tempo, spanmetrics]
     metrics:
-      receivers: [otlp]
+      # spanmetrics is the receiver half of the connector, not a socket.
+      receivers: [otlp, spanmetrics]
       processors: [memory_limiter, resource, filter/drop-unattributed, batch]
       exporters: [prometheusremotewrite]
     logs:
