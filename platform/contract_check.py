@@ -16,8 +16,11 @@ Three platform-level checks run before the per-service table:
   source that needs no metric-name convention, and it vanished once when the
   connector lived in a running container instead of the committed config.
 
-Optional `metrics:` descriptors are verified against the scraped series inside the
-existing `descriptor` check (no extra check).
+`metrics`, `slos` and `routes_allowlist` are optional enrichment. A descriptor
+without them still gets a scrape job, a Down alert and span-derived RED; its
+`descriptor` evidence says the metric contract is not declared. When `metrics:`
+is present it is verified against the scraped series inside the existing
+`descriptor` check (no extra check).
 
 Usage:
   python3 platform/contract_check.py \
@@ -83,12 +86,13 @@ DESCRIPTOR_REQUIRED_KEYS = (
     "environment",
     "scrape",
     "health",
-    "slos",
-    "routes_allowlist",
     "runbook",
 )
-# Schema v1 amendment 2026-11-22: metrics is optional.
-DESCRIPTOR_OPTIONAL_KEYS = ("metrics",)
+# Schema v1 amendment 2026-11-24: the metric contract is optional enrichment.
+# Span-derived RED covers every traced service, so a descriptor may stop at
+# name/owner/namespace/environment/scrape/health/runbook. Declaring `metrics`
+# also declares `slos` (and a latency SLI needs its `routes_allowlist`).
+DESCRIPTOR_OPTIONAL_KEYS = ("metrics", "slos", "routes_allowlist")
 DESCRIPTOR_TOP_KEYS = DESCRIPTOR_REQUIRED_KEYS + DESCRIPTOR_OPTIONAL_KEYS
 METRIC_NAME_RE = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
 ROUTE_LABELS = ("route", "endpoint")
@@ -494,9 +498,32 @@ def check_route_label(samples, allowlist=None, descriptor_error=None, declared_l
         evidence = f"{len(values)} distinct values exceed {ROUTE_VALUE_LIMIT}: {evidence}"
         return Result("route_label", FAIL, evidence)
 
-    if descriptor_error or not isinstance(allowlist, list):
-        detail = descriptor_error or "descriptor has no usable routes_allowlist"
-        return Result("route_label", FAIL, f"{detail}; route values cannot be checked")
+    if descriptor_error:
+        return Result("route_label", FAIL, f"{descriptor_error}; route values cannot be checked")
+
+    if allowlist is None:
+        # No allowlist is a statement, not a gap: check the two violations that
+        # need no allowlist (raw IDs in route values, and cardinality blow-up).
+        raw = [
+            value
+            for value in values
+            if looks_like_raw_id(value) and not is_infrastructure_route(normalise_route(value))
+        ]
+        if raw:
+            detail = f"{len(raw)} raw-ID route value(s) with routes_allowlist not declared: "
+            detail += ", ".join(raw[:6])
+            if len(raw) > 6:
+                detail += f", … (+{len(raw) - 6} more)"
+            return Result("route_label", FAIL, f"{detail}; {evidence}")
+        evidence += "; routes_allowlist not declared; checked raw IDs and cardinality only"
+        return Result("route_label", PASS, evidence)
+
+    if not isinstance(allowlist, list):
+        return Result(
+            "route_label",
+            FAIL,
+            "descriptor has no usable routes_allowlist; route values cannot be checked",
+        )
     allowed = {
         normalise_route(route) for route in allowlist if isinstance(route, str) and route.strip()
     }
@@ -964,6 +991,15 @@ def validate_descriptor(data, service_name):
         if key not in data:
             problems.append(f"{key}: missing")
 
+    # The metric contract is all-or-nothing: the RED latency rule and the Sloth
+    # spec read slos.latency, while the Sloth rules are only rendered when a
+    # metric contract exists. Declaring one half would either render nothing or
+    # crash the generator, so reject it instead of silently dropping it.
+    if ("metrics" in data) != ("slos" in data):
+        missing = "slos" if "metrics" in data else "metrics"
+        declared = "metrics" if "metrics" in data else "slos"
+        problems.append(f"{missing}: required when {declared} is declared")
+
     for key in ("name", "owner", "namespace", "environment", "runbook"):
         if key in data:
             _check_string(problems, data, key, key)
@@ -1039,19 +1075,25 @@ def validate_descriptor(data, service_name):
                 problems.append(f"metrics.route_label: expected one of {', '.join(ROUTE_LABELS)}")
 
     routes = data.get("routes_allowlist", _MISSING)
-    if routes is _MISSING:
-        problems.append("routes_allowlist: missing")
-    elif not isinstance(routes, list):
-        problems.append("routes_allowlist: expected list")
-    else:
-        for position, route in enumerate(routes):
-            if not isinstance(route, str) or not route.strip():
-                problems.append(f"routes_allowlist[{position}]: expected non-empty string")
-        # A latency SLO with no allowlist aggregates every route, including
-        # scrape and probe traffic: the descriptor would be silent about what it
-        # measures. Reject it instead of generating a false-green SLI.
-        if not routes and isinstance(slos, dict) and "latency" in slos:
-            problems.append("routes_allowlist: must not be empty when slos.latency is declared")
+    if routes is not _MISSING:
+        if not isinstance(routes, list):
+            problems.append("routes_allowlist: expected list")
+        else:
+            for position, route in enumerate(routes):
+                if not isinstance(route, str) or not route.strip():
+                    problems.append(f"routes_allowlist[{position}]: expected non-empty string")
+            # An empty list is a mistake, not a statement: it is indistinguishable
+            # from "I meant to list routes and forgot". Absence (the key is not
+            # written) is the way to say this service declares no allowlist.
+            if not routes:
+                problems.append(
+                    "routes_allowlist: must not be empty; omit the key to declare no allowlist"
+                )
+    elif isinstance(slos, dict) and "latency" in slos:
+        # The latency SLI filters on this allowlist. Without it the SLI would
+        # count every route, including scrape and health traffic, and would be a
+        # quieter gate than the descriptor claims.
+        problems.append("routes_allowlist: required when slos.latency is declared")
     return problems
 
 
@@ -1084,8 +1126,11 @@ def check_descriptor(name, services_dir, samples=None):
             evidence += f"; … (+{len(problems) - 8} more)"
         return Result("descriptor", FAIL, evidence)
     port = data["scrape"]["port"]
-    routes = len(data["routes_allowlist"])
-    evidence = f"{path}: schema v1 valid (port {port}, {routes} routes)"
+    routes = data.get("routes_allowlist")
+    if isinstance(routes, list):
+        evidence = f"{path}: schema v1 valid (port {port}, {len(routes)} routes)"
+    else:
+        evidence = f"{path}: schema v1 valid (port {port}, routes_allowlist not declared)"
 
     metrics = data.get("metrics")
     if isinstance(metrics, dict):
@@ -1104,6 +1149,8 @@ def check_descriptor(name, services_dir, samples=None):
                 f"latency_histogram={histogram} "
                 f"({len(declared)}/{len(declared)} observed)"
             )
+    else:
+        evidence += "; metrics not declared; RED and SLO are span-only"
 
     return Result("descriptor", PASS, evidence)
 

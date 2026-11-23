@@ -8,10 +8,13 @@ second YAML reader.
 
 Generated:
   docker-compose/configs/prometheus/prometheus.yml   whole file
-  alert-rules/generated/red-<name>.yml                RED rules
-  alert-rules/generated/slo-<name>.yml                Sloth SLO rules
+  alert-rules/generated/red-<name>.yml                RED rules (Down only without metrics)
+  alert-rules/generated/slo-<name>.yml                Sloth SLO rules (metrics descriptors only)
   runbooks/generated/<name>.md                        runbook stub
 
+``metrics``/``slos``/``routes_allowlist`` are optional enrichment. A descriptor
+without them still gets a scrape job, the ``<Name>Down`` alert, span-derived RED,
+a dashboard row and a runbook; it gets no Sloth file and no error/latency rules.
 The SLO rules are produced by running the pinned Sloth image over a spec
 rendered from the descriptor. Sloth's ``validate`` runs as a gate before
 ``generate``; if Docker is unavailable the whole run fails instead of quietly
@@ -182,15 +185,39 @@ def routes_regex(routes):
 def service_context(name, data):
     scrape = data["scrape"]
     health = data["health"]
-    slos = data["slos"]
-    availability = slos["availability"]
-    latency = slos["latency"]
-    metrics = data.get("metrics") or {}
-    routes = data["routes_allowlist"]
+    declared_metrics = data.get("metrics")
+    # The validator guarantees metrics and slos are declared together; the
+    # defaults keep a metric-less descriptor from raising on absent enrichment.
+    slos = data.get("slos") or {}
+    availability = slos.get("availability") or {}
+    latency = slos.get("latency") or {}
+    metrics = declared_metrics or {}
+    routes = data.get("routes_allowlist") or []
     route_label = metrics.get("route_label", "route")
-    threshold = format_number(latency["threshold_seconds"])
-    histogram = latency["histogram"]
+    threshold = format_number(latency.get("threshold_seconds", 0))
+    histogram = latency.get("histogram", "not declared")
     pascal = pascal_case(name)
+    routes_list = ", ".join(f"`{route}`" for route in routes) or "none"
+    if declared_metrics:
+        scope = f"Its latency SLO covers\n{len(routes)} route(s): {routes_list}."
+        slo_section = "\n".join(
+            (
+                f"- **Availability:** {format_percent(availability['objective'])} of requests"
+                f" must not fail over\n  {availability['window']}"
+                f" (`{availability['error_selector']}`).",
+                f"- **Latency:** {format_percent(latency['objective'])} of requests must"
+                f" complete in under {threshold} s.",
+                f"- **Metrics:** counter `{metrics['requests_total']}`, histogram"
+                f" `{histogram}` (label `{route_label}`).",
+            )
+        )
+    else:
+        scope = "It declares no metric contract; RED is derived from spans."
+        slo_section = (
+            "The service declares no metric contract, so no SLO rules are generated; RED"
+            f" signals come from spans. See [Argus — Service filtered to {name}]"
+            f"(/d/argus-service?var-service={name})."
+        )
     return {
         "name": name,
         "owner": data["owner"],
@@ -200,15 +227,17 @@ def service_context(name, data):
         "metrics_path": scrape.get("path", "/metrics"),
         "interval": scrape.get("interval", "15s"),
         "health_path": health.get("path", "/healthz"),
+        "scope": scope,
+        "slo_section": slo_section,
         "route_count": str(len(routes)),
-        "routes": ", ".join(f"`{route}`" for route in routes) or "none",
+        "routes": routes_list,
         "routes_regex": routes_regex(routes),
-        "availability_objective": format_percent(availability["objective"]),
-        "availability_objective_pct": format_objective(availability["objective"]),
-        "availability_window": availability["window"],
-        "error_selector": availability["error_selector"],
-        "latency_objective": format_percent(latency["objective"]),
-        "latency_objective_pct": format_objective(latency["objective"]),
+        "availability_objective": format_percent(availability.get("objective", 0)),
+        "availability_objective_pct": format_objective(availability.get("objective", 0)),
+        "availability_window": availability.get("window", "not declared"),
+        "error_selector": availability.get("error_selector", "not declared"),
+        "latency_objective": format_percent(latency.get("objective", 0)),
+        "latency_objective_pct": format_objective(latency.get("objective", 0)),
         "threshold": threshold,
         "threshold_seconds": threshold,
         "route_label": route_label,

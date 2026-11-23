@@ -14,10 +14,11 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="${PROMTOOL_IMAGE:-prom/prometheus:v2.53.0}"
 
 # Golden tests for the generator run first: they are stdlib-only and catch the
-# `{id}` escaping regression and any drift in the labelkeep allowlist without a
-# container runtime.
+# `{id}` escaping regression, any drift in the labelkeep allowlist, and a
+# metric-less descriptor quietly growing a Sloth SLO file.
 python3 "$repo_root/platform/tests/test_routes_regex.py"
 python3 "$repo_root/platform/tests/test_cardinality_guard.py"
+python3 "$repo_root/platform/tests/test_minimal_descriptor.py"
 
 shopt -s nullglob
 tests=("$repo_root"/platform/tests/*.yml)
