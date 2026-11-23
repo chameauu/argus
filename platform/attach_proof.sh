@@ -55,8 +55,13 @@ sleep 20
 query_prom() { curl -s --get --data-urlencode "query=$1" "$prom/api/v1/query"; }
 series_count() { query_prom "$1" | jq -r '.data.result | length' 2>/dev/null || echo 0; }
 
+# A rate needs two spanmetrics flushes; the counter itself proves the connector saw
+# this service, which is what makes the dashboard's span-derived row render.
+span_calls="$(query_prom "sum(spanmetrics_calls_total{service=\"$service\"})" |
+	jq -r '[.data.result[]?.value[1] | tonumber] | add // 0' 2>/dev/null || echo 0)"
+awk -v v="$span_calls" 'BEGIN{exit !(v > 0)}' ||
+	fail "the dashboard's span-derived RED row would be empty for \"$service\" (spanmetrics_calls_total=$span_calls)"
 metrics="$(series_count "{__name__=~\".+_http_requests_total\",service=\"$service\"}")"
-[ "$metrics" -ge 1 ] || fail "no *_http_requests_total series with service=\"$service\" in Prometheus"
 
 traces="$(curl -s --get --data-urlencode "q={resource.service.name=\"$service\"}" \
 	--data-urlencode 'limit=5' "$tempo/api/search" | jq -r '.traces | length' 2>/dev/null || echo 0)"
@@ -67,12 +72,11 @@ logs="$(curl -s --get --data-urlencode "query={service_name=\"$service\"}" \
 	jq -r '[.data.result[]?.values | length] | add // 0' 2>/dev/null || echo 0)"
 [ "$logs" -ge 1 ] || fail "no log lines with service_name=\"$service\" in Loki"
 
-dashboard="$(query_prom "label_values({__name__=~\".+_http_requests_total\"}, service)" >/dev/null 2>&1; \
-	curl -s "$prom/api/v1/label/service/values" | jq -r ".data | index(\"$service\") // empty")"
+dashboard="$(curl -s "$prom/api/v1/label/service/values" | jq -r ".data | index(\"$service\") // empty")"
 [ -n "$dashboard" ] || fail "\"$service\" is not selectable in the dashboard's service variable"
 
 after="$(tree_state)"
 docker rm -f "$container" >/dev/null 2>&1 || true
 [ -z "$after" ] || fail "the run modified this repository: $after"
 
-echo "PASS: $service attached with two env vars — ${metrics} metric series, ${traces} traces, ${logs} log lines, and it is selectable in Argus — Service. No platform file changed."
+echo "PASS: $service attached with two env vars — span-derived calls ${span_calls} (the dashboard renders it without any naming convention), ${metrics} native counter series, ${traces} traces, ${logs} log lines, selectable in Argus — Service. No platform file changed."
