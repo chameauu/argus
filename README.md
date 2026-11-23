@@ -31,52 +31,96 @@ Scrape targets: **9 up** — prometheus, node-exporter, cadvisor, alloy, alertma
 
 ## How the platform works
 
-The unit of configuration is a descriptor:
+Two tiers, and the distinction is the honest one to make when describing this project.
+
+**Tier A — attach. No platform edit.** Point an application at the collector and name it:
+
+```bash
+OTEL_SERVICE_NAME=my-app
+OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:4318     # 4317 for gRPC
+```
+
+Traces, metrics and logs land. The collector drops anything without `service.name` (silently at
+the SDK, which is why `otlp_service_name` probes the store rather than trusting the response),
+stamps `service` from the resource, and derives RED from spans via the `spanmetrics` connector.
+The app appears in the `$service` selector on `Argus — Service` with request rate, error ratio and
+p95 computed from its spans — no naming convention, no descriptor, no pull request.
+
+`bash platform/attach_proof.sh <image> <service>` proves this end-to-end: it starts a container
+outside the repo with two env vars, drives traffic, and fails unless metrics, traces, logs and the
+span-derived RED row all materialise **and** `git status` is unchanged. Last run: `span-derived
+calls 12, 5 traces, 5 log lines, selectable in Argus — Service`.
+
+**Tier B — curate. One descriptor.** SLOs, burn-rate pages and runbooks are claims about your
+service that telemetry cannot invent, so they are declared:
 
 ```yaml
-# services/foreign-app.yaml
-name: foreign-app
+# services/webhook-receiver.yaml — minimal form
+name: webhook-receiver
 owner: jmal
 namespace: argus
 environment: local
-scrape: {port: 8099, path: /metrics, interval: 15s}
+scrape: {port: 8080, path: /metrics, interval: 15s}
 health: {path: /healthz}
+runbook: runbooks/WebhookDeliveryFailing.md
+```
+
+`metrics`, `slos` and `routes_allowlist` are optional enrichment. A descriptor without `metrics`
+gets a scrape job, a `Down` alert and a runbook that points at span-derived RED; one with `metrics`
+additionally gets RED error/latency rules and Sloth SLO rules:
+
+```yaml
 metrics: {requests_total: orders_http_requests_total, route_label: route}
 slos:
   availability: {objective: 0.995, window: 30d, error_selector: 'status=~"5.."'}
   latency: {objective: 0.95, threshold_seconds: 0.5, histogram: orders_http_request_duration_seconds}
 routes_allowlist: [/orders, /orders/{id}, /checkout]
-runbook: runbooks/generated/foreign-app.md
 ```
 
 `python3 platform/generate.py` renders, deterministically, from every descriptor:
 
-| Artefact | Path |
-|---|---|
-| Scrape jobs (whole file) | `docker-compose/configs/prometheus/prometheus.yml` |
-| RED alerts | `alert-rules/generated/red-<name>.yml` |
-| SLO recording + burn-rate rules (via Sloth) | `alert-rules/generated/slo-<name>.yml` |
-| RED dashboard (templated for all services) | `dashboards/argus-service.json` |
-| Runbook stub | `runbooks/generated/<name>.md` |
+| Artefact | Path | Emitted when |
+|---|---|---|
+| Scrape jobs (whole file) | `docker-compose/configs/prometheus/prometheus.yml` | always |
+| RED alerts | `alert-rules/generated/red-<name>.yml` | always (`Down` only without `metrics`) |
+| SLO recording + burn-rate rules (via Sloth) | `alert-rules/generated/slo-<name>.yml` | only with `metrics` |
+| Runbook stub | `runbooks/generated/<name>.md` | always |
 
-Generated files carry a do-not-edit header and are never hand-edited. Three gates keep that true:
+The dashboard is **not** generated per service — it is one hand-maintained dashboard
+(`dashboards/argus-service.json`) with a `$service` variable, so thirteen services and three
+hundred would use the same file.
+
+Generated files carry a do-not-edit header and are never hand-edited. Four gates keep that true:
 
 ```bash
-python3 platform/generate.py --check           # drift + orphan detection
-bash platform/contract_live.sh                 # conformance: 40/40 across four services
-bash platform/test_rules.sh                    # regex golden tests + promtool unit tests
+python3 platform/generate.py --check           # drift, orphans, Compose services without a descriptor
+bash platform/contract_live.sh                 # config parity + 4 platform checks + 40/40 conformance
+bash platform/test_rules.sh                    # 3 stdlib golden suites + 3 promtool unit tests
+python3 platform/config_parity.py              # running config == committed config (in contract_live too)
 ```
 
-`--check` fails on a hand-edited artefact, on an artefact whose descriptor is gone, and on a Compose application service with no descriptor. All three run in CI and in pre-commit.
+`config_parity.py` exists because the collector has no hot reload: an edit that is never restarted
+leaves the running container on old config, and a revert after a restart leaves the committed file
+lying. The first direction is caught by mtime versus container start; the second by the
+`span_metrics` check, which only passes if the committed config actually produces span-derived RED.
 
 ### Onboarding a service — the honest version
 
-1. Write `services/<name>.yaml`.
-2. Add a Compose block for the container. **This is still a manual edit** — the descriptor does not generate Compose services.
+**Attach only (Tier A):** set two environment variables; nothing in this repository changes. Run
+`attach_proof.sh` to verify before telling anyone it works.
+
+**Attach + curate (Tier B):**
+
+1. Write `services/<name>.yaml` — seven keys if you only want a scrape job and a `Down` alert.
+2. Add a Compose block for the container. **This is still a manual edit** — the descriptor does not
+   generate Compose services, and making it do so is the next structural step.
 3. `python3 platform/generate.py`, then reload Prometheus (`docker kill -s HUP argus-prometheus-1`).
 4. `bash platform/contract_live.sh` — all checks must pass.
 
-Measured once end-to-end on a Flask service written from the contract alone: **165 seconds**, descriptor in hand to 36/36 green on a warm stack. That number excludes writing the app itself, and it required one generator bug fix (route templates such as `/orders/{id}` were double-escaped for PromQL). Say "descriptor to observability in 165 s", not "onboarding took 165 s".
+Measured once end-to-end on a Flask service written from the contract alone: **165 seconds**,
+descriptor in hand to 36/36 green on a warm stack. That number excludes writing the app itself, and
+it required one generator bug fix (route templates such as `/orders/{id}` were double-escaped for
+PromQL). Say "descriptor to observability in 165 s", not "onboarding took 165 s".
 
 ## The contract
 
@@ -88,12 +132,25 @@ Measured once end-to-end on a Flask service written from the contract alone: **1
 4. **Correlation** — logs carry `trace_id=<32 lowercase hex>` on the request line.
 5. **Descriptor** — `services/<name>.yaml`, schema v1.
 
+The rules split along the two tiers. Rules 1, 3 and 4 are the **attach** contract: send OTLP with a
+service name, answer `/healthz`, put `trace_id` on request log lines — and you are visible. Rule 2 is
+the **curation** contract: a request counter and latency histogram in a naming you declare in the
+descriptor, which is what makes error-rate and latency rules and SLOs possible. Rule 5 is the
+descriptor itself, and it is optional: without one you get everything Tier A provides and nothing
+Tier B does.
+
 Two things about the contract are deliberate:
 
 - **The platform stamps `service` at scrape time** via `metric_relabel_configs`. Applications do not have to label anything, and the checker reports the difference truthfully.
 - **`/admin/*` and `/health*`, `/metrics`, `/docs` are infrastructure routes**, exempt from the route allowlist. They are excluded rather than listed because the allowlist also filters the latency SLI — control-plane traffic must not enter the SLO.
 
 `contract_live.sh` runs ten checks per service: `metrics_reachable`, `service_label`, `route_label`, `series_budget`, `series_integrity`, `healthz`, `otlp_traces`, `trace_id_log_format`, `log_continuity`, `descriptor`.
+
+Four checks run once for the platform rather than per service: `config_parity` (running config equals
+committed config), `otlp_metrics` (a real OTLP/HTTP metric lands in Prometheus), `otlp_service_name`
+(telemetry without `service.name` is dropped), `span_metrics` (the collector is deriving RED from
+spans). `span_metrics` is the one that would have caught the day this repo ran a spanmetrics connector
+in a container but not in git.
 
 ## Alerts and SLOs
 
@@ -152,6 +209,17 @@ The load generator sends a healthy mix by design (98% `/work`, 2% `/error-prone`
 | Tempo | 168 hours |
 
 The 30-day SLO window needs 30 days of samples, so retention was raised from 7 days. The 2 GiB cap was sized from measurement, not guesswork: 3018 series, 199.8 samples/s, 1.32 bytes/sample → ~684 MB per 30 days, doubled for index and WAL, against 71 GB free.
+
+**Span-derived RED costs series too.** The `spanmetrics` connector emits `calls` plus a duration
+histogram per dimension set: measured **400 `spanmetrics_*` series for four services** (20 logical
+series each, 17 histogram buckets included), against a head of ~5 400. Two consequences worth knowing:
+
+- `span_name` is added automatically and is bounded only if applications name spans after the route
+  (`GET /orders/{id}`), not after the instance (`GET /orders/1234`). An app that puts IDs in span names
+  multiplies cardinality; the fix is `exclude_dimensions: [span.name]` when that happens — measured
+  cost first, not assumed.
+- Connector state is cumulative: a service's series persist after its container is gone until
+  `metrics_expiration` or a collector restart clears them.
 
 **Cardinality guard.** Every generated scrape job keeps only the labels the platform understands:
 
