@@ -291,9 +291,7 @@ def check_route_label(samples, allowlist=None, descriptor_error=None, declared_l
             detail += f" (raw ID: {', '.join(raw[:3])})"
         detail += f"; allowlist: {', '.join(sorted(allowed - INFRASTRUCTURE_ROUTES)) or 'empty'}"
         return Result("route_label", FAIL, detail)
-    evidence += (
-        "; all values covered by routes_allowlist (or infrastructure/control-plane routes)"
-    )
+    evidence += "; all values covered by routes_allowlist (or infrastructure/control-plane routes)"
     return Result("route_label", PASS, evidence)
 
 
