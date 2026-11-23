@@ -1,0 +1,33 @@
+name: foreign-app
+owner: jmal
+namespace: argus
+environment: local
+
+scrape:
+  port: 8099
+  path: /metrics
+  interval: 15s
+
+health:
+  path: /healthz
+
+metrics:
+  requests_total: orders_http_requests_total
+  route_label: route
+
+slos:
+  availability:
+    objective: 0.995
+    window: 30d
+    error_selector: 'status=~"5.."'
+  latency:
+    objective: 0.95
+    threshold_seconds: 0.5
+    histogram: orders_http_request_duration_seconds
+
+routes_allowlist:
+  - /orders
+  - /orders/{id}
+  - /checkout
+
+runbook: runbooks/generated/foreign-app.md

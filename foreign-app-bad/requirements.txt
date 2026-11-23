@@ -1,0 +1,4 @@
+flask==3.0.3
+gunicorn==23.0.0
+prometheus-client==0.21.1
+opentelemetry-instrumentation-flask==0.50b0

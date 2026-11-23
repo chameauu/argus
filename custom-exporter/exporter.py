@@ -47,6 +47,7 @@ app = FastAPI(title="custom-exporter")
 overrides: dict[str, float | None] = {
     "job_queue_depth": None,
     "webhook_delivery_success_ratio": None,
+    "webhook_delivery_seconds": None,
 }
 
 active_users_total = Gauge("active_users_total", "Current active users")
@@ -126,8 +127,19 @@ def _simulate_business_metrics():
 
         # Rolling window instead of a lifetime average: the ratio stays in a
         # tight healthy band (~0.83) and reacts to a real delivery regression.
+        # Healthy by default: 99.5% of deliveries finish well under the 0.5s SLO
+        # threshold, so both the latency SLO and the per-route p99 RED rule stay
+        # quiet. The 0.5% slow tail never dominates p99. A forced value via
+        # POST /admin/override?webhook_delivery_seconds=N makes every delivery
+        # take N seconds, which is the demonstrated way to fire both alerts.
+        forced_seconds = overrides["webhook_delivery_seconds"]
         for _ in range(random.randint(1, 5)):
-            duration = random.uniform(0.05, 3.0)
+            if forced_seconds is not None:
+                duration = forced_seconds
+            elif random.random() < 0.005:
+                duration = random.uniform(0.6, 1.5)
+            else:
+                duration = random.uniform(0.02, 0.30)
             webhook_delivery_duration_seconds.labels(route=DELIVERY_ROUTE).observe(duration)
             recent_deliveries.append(duration < 2.5)
 
@@ -185,18 +197,21 @@ FastAPIInstrumentor.instrument_app(app)
 def set_override(
     queue_depth: float | None = Query(default=None, alias="job_queue_depth"),
     success_ratio: float | None = Query(default=None, alias="webhook_delivery_success_ratio"),
+    delivery_seconds: float | None = Query(default=None, alias="webhook_delivery_seconds"),
 ) -> dict[str, float | None]:
     if queue_depth is not None:
         overrides["job_queue_depth"] = queue_depth
     if success_ratio is not None:
         overrides["webhook_delivery_success_ratio"] = success_ratio
+    if delivery_seconds is not None:
+        overrides["webhook_delivery_seconds"] = delivery_seconds
     return overrides
 
 
 @app.post("/admin/reset")
 def reset_overrides() -> dict[str, float | None]:
-    overrides["job_queue_depth"] = None
-    overrides["webhook_delivery_success_ratio"] = None
+    for key in overrides:
+        overrides[key] = None
     return overrides
 
 

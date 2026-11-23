@@ -109,6 +109,31 @@ services:
       otel-collector:
         condition: service_started
 
+  foreign-app:
+    build:
+      context: ../foreign-app
+    restart: unless-stopped
+    environment:
+      - OTEL_SERVICE_NAME=foreign-app
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORTER_OTLP_INSECURE=true
+    ports:
+        - "18099:8099"
+    networks:
+      - obs-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8099/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 256m
+    depends_on:
+      custom-exporter:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
   load-generator:
     image: curlimages/curl:8.8.0
     restart: unless-stopped

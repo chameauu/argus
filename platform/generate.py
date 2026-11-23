@@ -129,8 +129,15 @@ def routes_regex(routes):
     Prometheus regex matchers are fully anchored, so no anchors are needed.
     Backslash-escaped hyphens are valid RE2 but needlessly noisy; keep them as
     literal hyphens for readable generated rules.
+
+    The alternation is embedded in a double-quoted PromQL string, where `\\{`
+    is an invalid escape; every backslash the regex needs must be doubled so
+    PromQL decodes it back to the single backslash RE2 expects. Without this a
+    contract-legal route template such as `/orders/{id}` fails Sloth's
+    `prom_expr` validation.
     """
-    return "|".join(re.escape(route).replace("\\-", "-") for route in routes)
+    alternation = "|".join(re.escape(route).replace("\\-", "-") for route in routes)
+    return alternation.replace("\\", "\\\\")
 
 
 def service_context(name, data):
