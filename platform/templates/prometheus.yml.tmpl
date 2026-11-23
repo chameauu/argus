@@ -22,12 +22,31 @@ scrape_configs:
       - target_label: service
         replacement: prometheus
 
+  # Alertmanager must be a scrape target for PlatformAlertDeliveryFailing to
+  # prove delivery, not just evaluation: without it the Watchdog proves only
+  # that Prometheus evaluates rules, not that notifications leave the box.
+  - job_name: "alertmanager"
+    static_configs:
+      - targets: ["alertmanager:9093"]
+    metric_relabel_configs:
+      - target_label: service
+        replacement: alertmanager
+
   - job_name: "node-exporter"
     static_configs:
       - targets: ["node-exporter:9100"]
     metric_relabel_configs:
       - target_label: service
         replacement: node-exporter
+
+  # Per-container memory. node-exporter reports the host only, so a container
+  # pinned at its mem_limit (tempo: 19 restarts) is invisible without this.
+  - job_name: "cadvisor"
+    static_configs:
+      - targets: ["cadvisor:8080"]
+    metric_relabel_configs:
+      - target_label: service
+        replacement: cadvisor
 
   # The log agent monitors itself. Without this job the mitigation recorded in
   # docs/platform/adr-0001-log-agent.md (loki_process_dropped_lines_total) is

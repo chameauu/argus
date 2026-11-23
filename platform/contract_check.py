@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Conformance checker for the argus platform contract v1 (phase 0).
 
-Nine checks per service, each PASS / FAIL / SKIP with quoted evidence:
-  metrics_reachable, service_label, route_label, series_budget,
+Ten checks per service, each PASS / FAIL / SKIP with quoted evidence:
+  metrics_reachable, service_label, route_label, series_budget, series_integrity,
   healthz, otlp_traces, trace_id_log_format, log_continuity, descriptor
 
 Optional `metrics:` descriptors are verified against the scraped series inside the
@@ -308,6 +308,98 @@ def check_series_budget(samples):
     evidence = f"{len(app)} application series (limit {SERIES_LIMIT}), {exempt} runtime-exempt"
     verdict = PASS if len(app) <= SERIES_LIMIT else FAIL
     return Result("series_budget", verdict, evidence)
+
+
+def prometheus_named_counts(prometheus, query, timeout):
+    """Run an instant count-by-name query; return ({metric_name: count}, error)."""
+    params = urllib.parse.urlencode({"query": query})
+    status, body, _, error = fetch(f"{prometheus}/api/v1/query?{params}", timeout)
+    if error:
+        return None, f"prometheus unreachable: {error}"
+    if status != 200:
+        return None, f"prometheus query -> HTTP {status}: {body[:100].strip()}"
+    try:
+        payload = json.loads(body)
+        if payload.get("status") != "success":
+            return None, f"prometheus error: {payload.get('error', 'unknown')}"
+        counts = {}
+        for sample in payload["data"]["result"]:
+            counts[sample["metric"]["__name__"]] = int(float(sample["value"][1]))
+        return counts, None
+    except (ValueError, KeyError, TypeError) as exc:
+        return None, f"prometheus response unreadable: {type(exc).__name__}"
+
+
+def prometheus_metric_labels(prometheus, job, metric, timeout):
+    """Label names on the metric's current series for this job, or an empty set."""
+    query = f'{metric}{{job="{job}"}}'
+    params = urllib.parse.urlencode({"query": query})
+    status, body, _, error = fetch(f"{prometheus}/api/v1/query?{params}", timeout)
+    if error or status != 200:
+        return set()
+    try:
+        result = json.loads(body)["data"]["result"]
+    except (ValueError, KeyError, TypeError):
+        return set()
+    names = set()
+    for sample in result:
+        names.update(sample.get("metric", {}))
+    names.discard("__name__")
+    return names
+
+
+def check_series_integrity(name, samples, prometheus, timeout):
+    """Stored series must not be a collapsed subset of what the app exposes.
+
+    ``labelkeep`` can only drop labels, and dropping a label merges every raw
+    series that differed only in that label. Prometheus keeps one sample per
+    timestamp, so the extra series vanish silently. Comparing the exposed
+    distinct label sets per metric against ``count by (__name__)`` catches it;
+    ``scrape_samples_scraped`` does not, because it counts samples, not surviving
+    label sets. ``generation`` on python_gc_* is the concrete case.
+    """
+    if samples is None:
+        detail = "GET /metrics unavailable; series integrity not evaluable"
+        return Result("series_integrity", FAIL, detail)
+
+    exposed = {}
+    for metric, labels in samples:
+        exposed.setdefault(metric, set()).add(tuple(sorted(labels.items())))
+    counts, error = prometheus_named_counts(
+        prometheus, f'count by (__name__) ({{job="{name}"}})', timeout
+    )
+    if error:
+        return Result("series_integrity", FAIL, error)
+
+    problems = []
+    for metric in sorted(exposed):
+        raw_count = len(exposed[metric])
+        stored = counts.get(metric, 0)
+        if stored >= raw_count:
+            continue
+        kept = prometheus_metric_labels(prometheus, name, metric, timeout)
+        dropped = {key for pair in exposed[metric] for key, _ in pair} - kept
+        detail = f"{metric}: {raw_count} exposed -> {stored} stored"
+        if dropped:
+            dimensions = []
+            for key in sorted(dropped):
+                values = {value for pair in exposed[metric] for k, value in pair if k == key}
+                shown = ", ".join(sorted(values)[:4])
+                if len(values) > 4:
+                    shown += ", …"
+                dimensions.append(f"{key} ({shown})")
+            detail += "; dropped " + ", ".join(dimensions[:3])
+        problems.append(detail)
+
+    raw_total = sum(len(series) for series in exposed.values())
+    stored_total = sum(counts.get(metric, 0) for metric in exposed)
+    evidence = f"{len(exposed)} metric names: {raw_total} exposed series, {stored_total} stored"
+    if not problems:
+        return Result("series_integrity", PASS, evidence)
+    detail = f"{len(problems)} metric name(s) collapsed: " + "; ".join(problems[:3])
+    if len(problems) > 3:
+        detail += f"; … (+{len(problems) - 3} more)"
+    return Result("series_integrity", FAIL, f"{detail} ({evidence})")
 
 
 def check_healthz(base, timeout):
@@ -804,6 +896,7 @@ def run_service(name, base, timeout, prometheus, services_dir, max_log_gap):
     results.append(check_service_label(name, prometheus, timeout))
     results.append(check_route_label(samples, allowlist, descriptor_error, declared_label))
     results.append(check_series_budget(samples))
+    results.append(check_series_integrity(name, samples, prometheus, timeout))
     results.append(check_healthz(base, timeout))
     results.append(check_otlp_traces(name, timeout))
     results.append(check_trace_id_log_format(name, timeout))

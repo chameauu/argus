@@ -93,6 +93,7 @@ PLATFORM_COMPOSE_SERVICES = frozenset(
         "alloy",
         "otel-collector",
         "node-exporter",
+        "cadvisor",
         "load-generator",
     }
 )

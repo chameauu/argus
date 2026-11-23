@@ -8,11 +8,11 @@
 # Loaded by the existing /etc/prometheus-rules/*.yml glob alongside rules.yml.
 #
 # Every expression below was checked against this Prometheus before shipping.
-# `alertmanager_notifications_failed_total` was NOT included: Alertmanager is not
-# a scrape target here (7 targets: prometheus, node-exporter, alloy and the four
-# app jobs), so no alertmanager_* series exist in the TSDB and a delivery-failure
-# rule could never fire. Adding an Alertmanager job is a deliberate platform
-# change, not something this file should assume.
+# Alertmanager is an infrastructure scrape target (alertmanager:9093,
+# job="alertmanager"), and that is why PlatformAlertDeliveryFailing exists here:
+# Watchdog proves only that Prometheus evaluates rules, not that a notification
+# left the box, so without the alertmanager_* series a permanently failing
+# integration looked identical to a healthy one.
 groups:
   - name: platform
     rules:
@@ -42,20 +42,47 @@ groups:
           summary: "Scrape volume dropped for {{ $labels.job }}"
           description: "{{ $labels.job }} ({{ $labels.instance }}) is exposing under 80% of its 1h-high sample count (current: {{ $value }}) for 10 minutes."
 
-      # Head series measured 2026-11-23 at 3018 with the full four-service demo
-      # running (node-exporter alone is ~1280). 9000 is ~3x that: enough headroom
-      # for onboarding services without paging on steady-state growth, low
-      # enough to catch an unbounded label before disk or the 512Mi mem_limit
-      # becomes the symptom. Paired with the labelkeep guard in the app jobs.
-      - alert: PlatformTSDBHighSeries
-        expr: prometheus_tsdb_head_series > 9000
+      # Container memory was invisible: tempo sat at 99.3% of a 512 MiB limit
+      # and restarted 19 times with no page, because node-exporter reports the
+      # host, not a container's cgroup. cAdvisor labels each container `name`
+      # (the `container` label only appears in kubelet's cAdvisor), so the join
+      # is on name. The second term is the divide-by-zero guard: an unlimited
+      # container has limit 0, so the ratio is +Inf and would otherwise satisfy
+      # > 0.85 forever; requiring a finite limit drops it.
+      - alert: ContainerMemoryHigh
+        expr: |
+          (container_memory_working_set_bytes{job="cadvisor", name!=""}
+            / container_spec_memory_limit_bytes{job="cadvisor", name!=""} > 0.85)
+          and on (name) container_spec_memory_limit_bytes{job="cadvisor", name!=""} > 0
         for: 10m
         labels:
           severity: warning
           component: platform
         annotations:
-          summary: "Prometheus head series above 9000"
-          description: "prometheus_tsdb_head_series is {{ $value }} (threshold 9000, measured baseline 3018); check recent descriptor onboarding and label cardinality."
+          summary: "Container {{ $labels.name }} is above 85% of its memory limit"
+          description: "{{ $labels.name }} ({{ $labels.image }}) sits at {{ $value | humanizePercentage }} of its finite memory limit for 10 minutes. A restart or OOM kill follows; raise the limit or fix the leak before it does."
+
+      # Head series measured 2026-11-23 at 7471-7551, stable for 10+ minutes,
+      # after cAdvisor, Alertmanager and the dimension-label allowlist were in
+      # place. The previous baseline was 3018; adding cAdvisor (memory-only
+      # ~490), Alertmanager (~440) and the allowlist's dimension labels (~24
+      # series) accounts for ~950. The rest is churn: head retains ~3k stale
+      # series from container/veth/overlay recreation until compaction, while
+      # live series are ~4480, which is why the threshold tracks head.
+      # 11000 is ~46% above the measured head and ~2.5x live series: enough
+      # headroom for onboarding and routine churn (a `compose up -d` moved the
+      # head by hundreds during this work), low enough to catch an unbounded
+      # label before disk or the 1 GiB mem_limit becomes the symptom. Paired
+      # with the labelkeep guard in the app jobs.
+      - alert: PlatformTSDBHighSeries
+        expr: prometheus_tsdb_head_series > 11000
+        for: 10m
+        labels:
+          severity: warning
+          component: platform
+        annotations:
+          summary: "Prometheus head series above 11000"
+          description: "prometheus_tsdb_head_series is {{ $value }} (threshold 11000, measured baseline 7471-7551); check recent descriptor onboarding and label cardinality."
 
       # Any rule evaluation failure means alerts and recording rules are silently
       # not being produced. rate() so a restart-reset counter cannot look like a
@@ -69,6 +96,21 @@ groups:
         annotations:
           summary: "Rule evaluation failing for {{ $labels.rule_group }}"
           description: "{{ $labels.rule_group }} has failed evaluation in the last 5 minutes ({{ $value | printf \"%.4f\" }} failures/s). Alerts from that group are stale."
+
+      # Alertmanager is scraped (job="alertmanager"), so delivery failure has a
+      # series to alert on. > 0 rather than a threshold: one failed notification
+      # is one page nobody received. for: 10m keeps a single transient retry
+      # from paging, while a broken integration (bad webhook, rejected config)
+      # fails continuously and is caught.
+      - alert: PlatformAlertDeliveryFailing
+        expr: rate(alertmanager_notifications_failed_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: platform
+        annotations:
+          summary: "Alertmanager is failing to deliver notifications ({{ $labels.integration }})"
+          description: "{{ $labels.integration }} has failed notifications with reason {{ $labels.reason }} ({{ $value | printf \"%.4f\" }} failures/s over 5m). Alerts are firing but not leaving the box."
 
       # Dead-man's switch. vector(1) is always true, so this alert is expected to
       # be firing permanently; it proves the Prometheus -> Alertmanager -> receiver

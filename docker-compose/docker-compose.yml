@@ -16,7 +16,7 @@ services:
       # Disk: ~71 GB free on the host filesystem backing the prometheus-data
       #   volume, so 30d fits with large margin. Keep 30d and cap at 2 GB:
       #   ~2x the padded 30d projection, ~3% of free disk, and it bounds an
-      #   unexpected cardinality spike before the 512 MiB mem_limit is the
+      #   unexpected cardinality spike before the 1 GiB mem_limit is the
       #   symptom (the labelkeep guard in the app jobs is the first line).
       - --storage.tsdb.retention.time=30d
       - --storage.tsdb.retention.size=2GB
@@ -34,7 +34,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-    mem_limit: 512m
+    mem_limit: 1g      # 1 GiB, was 512 MiB. A cardinality spike must not OOM the
+                       # process before PlatformTSDBHighSeries has held for its 10m
+                       # `for:`, or the alert reports the aftermath of a crash
+                       # instead of the cause. Measured use is ~77 MiB at 6.7k head
+                       # series, so 1g is headroom against a spike, not a working
+                       # set. Retention stays bounded to 2 GB on disk.
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
@@ -79,6 +84,51 @@ services:
       retries: 3
       start_period: 10s
     mem_limit: 64m
+
+  cadvisor:
+    # Container memory is invisible to node-exporter: it reports the host, not
+    # per-container cgroups. Without this target the stack could sit at 99% of
+    # a container's mem_limit and restart (tempo: 19 restarts) with no alert.
+    # v0.55.1, not the 0.49 line: this host runs Docker 29.8.2 with the containerd
+    # image store, where the old Docker factory looks for
+    # image/overlayfs/layerdb/mounts/<id>/mount-id (absent) and drops every
+    # container ("failed to identify the read-write layer ID"). Fixed upstream;
+    # 0.55.1 here reports every container with name/image labels.
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    restart: unless-stopped
+    command:
+      # --docker_only skips the host's system cgroups, cAdvisor's expensive half.
+      # --housekeeping_interval=30s bounds the reading's staleness: Prometheus
+      # scrapes every 15s, so a 30s interval yields at most two scrapes per
+      # update and at most 30s of lag between a memory spike and the series.
+      # That is far finer than the 10m `for:` needs at negligible CPU cost;
+      # cAdvisor's 60s default would also work, 30s just halves the lag.
+      # --store_container_labels=false drops the 28 container_label_* labels per
+      # series: only name and image are kept, matching the labelkeep ethos.
+      # --enable_metrics=memory keeps the exporter to what the platform consumes
+      # (ContainerMemoryHigh). The full set added 2220 series; disk/diskIO and
+      # network duplicate node-exporter's host view and accounted for most of
+      # it, and a memory-only cAdvisor adds ~490.
+      - --docker_only=true
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+      - --enable_metrics=memory
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+        - "18080:8080"
+    networks:
+      - obs-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    mem_limit: 128m
 
   custom-exporter:
     build:

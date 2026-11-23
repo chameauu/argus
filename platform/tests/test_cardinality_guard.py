@@ -11,9 +11,14 @@ any label the platform does not know about. The exclusions are deliberate:
 * ``route``/``endpoint`` are the two contract route labels, ``status`` feeds the
   RED rules, ``le``/``quantile`` are required by histograms/summaries, and
   ``version`` is the one bounded build label exporters commonly add.
+* ``generation``, ``type``, ``mode``, ``code``, ``method`` and ``handler`` are
+  bounded dimension labels. Dropping one does not reduce cardinality: it merges
+  distinct series onto an identical label set and Prometheus discards all but
+  one sample per timestamp (python_gc_* exposes three ``generation`` values).
 
-The infrastructure jobs (prometheus, node-exporter, alloy) are intentionally
-exempt: their label sets are large and legitimately varied.
+The infrastructure jobs (prometheus, alertmanager, node-exporter, cadvisor,
+alloy) are intentionally exempt: their label sets are large and legitimately
+varied.
 
 Standard library only, so the test runs under plain ``python3`` in CI and from
 ``platform/test_rules.sh`` before the promtool container gate.
@@ -40,8 +45,14 @@ EXPECTED_LABELS = {
     "job",
     "instance",
     "version",
+    "generation",
+    "type",
+    "mode",
+    "code",
+    "method",
+    "handler",
 }
-INFRA_JOBS = {"prometheus", "node-exporter", "alloy"}
+INFRA_JOBS = {"prometheus", "alertmanager", "node-exporter", "cadvisor", "alloy"}
 LABELKEEP_RE = re.compile(r"^\s*- action: labelkeep\s*$")
 REGEX_RE = re.compile(r'^\s*regex: "([^"]*)"\s*$')
 JOB_RE = re.compile(r'^\s*- job_name: "([^"]+)"\s*$')
