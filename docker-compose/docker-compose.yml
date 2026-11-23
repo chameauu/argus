@@ -7,7 +7,19 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
+      # Retention sizing measured 2026-11-23 with the full demo stack up:
+      #   head series 3018; ingestion 199.8 samples/s (60s counter delta);
+      #   compressed chunk 1.32 B/sample (compaction_chunk_size_bytes_sum /
+      #   compaction_chunk_samples_sum) -> 199.8 * 86400 * 1.32 = 22.8 MB/day.
+      #   30d = 684 MB of chunks; padded to 2 B/sample incl. index/WAL = 1.04 GB.
+      #   App jobs alone scrape 13.6 samples/s -> 1.55 MB/day, 47 MB per 30d.
+      # Disk: ~71 GB free on the host filesystem backing the prometheus-data
+      #   volume, so 30d fits with large margin. Keep 30d and cap at 2 GB:
+      #   ~2x the padded 30d projection, ~3% of free disk, and it bounds an
+      #   unexpected cardinality spike before the 512 MiB mem_limit is the
+      #   symptom (the labelkeep guard in the app jobs is the first line).
       - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=2GB
     volumes:
       - ./configs/prometheus:/etc/prometheus:ro
       - ../alert-rules:/etc/prometheus-rules:ro

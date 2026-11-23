@@ -33,9 +33,17 @@ repos:
         pass_filenames: false
         files: ^docker-compose/configs/prometheus/.*\.ya?ml$
 
+      # Mirrors the CI step: validate every hand-written rule file under
+      # alert-rules/ (the generated/ subtree is covered by test_rules.sh and
+      # Sloth). Globbing means a new hand-written rule file is picked up with no
+      # edit here, exactly like platform.yml was.
       - id: promtool-check-rules
         name: promtool check alert rules
-        entry: bash -c 'docker run --rm --entrypoint promtool -v "$PWD/alert-rules:/rules" prom/prometheus:v2.53.0 check rules /rules/rules.yml'
+        entry: >-
+          bash -c 'targets=(); for f in "$PWD"/alert-rules/*.yml; do
+          targets+=("/rules/$(basename "$f")"); done;
+          docker run --rm --entrypoint promtool -v "$PWD/alert-rules:/rules"
+          prom/prometheus:v2.53.0 check rules "${targets[@]}"'
         language: system
         pass_filenames: false
         files: ^alert-rules/.*\.ya?ml$
@@ -89,14 +97,12 @@ repos:
         files: ^(alert-rules/generated/.*|platform/tests/.*|platform/templates/.*)$
 
       # Live gate: needs the demo stack up (docker compose up -d --build).
+      # The --service list is derived from services/*.yaml through the same
+      # name -> scrape.port -> published host port lookup CI uses, so a new
+      # descriptor needs no edit here.
       - id: platform-contract-demo
-        name: contract v1 on the three demo services (needs stack up)
-        entry: >-
-          python3 platform/contract_check.py
-          --service target-app=http://localhost:18000
-          --service custom-exporter=http://localhost:19200
-          --service webhook-receiver=http://localhost:18090
-          --prometheus http://localhost:19090
+        name: contract v1 on every service descriptor (needs stack up)
+        entry: bash platform/contract_live.sh
         language: system
         pass_filenames: false
         files: ^(services/.*\.ya?ml|platform/.*|docker-compose/configs/prometheus/.*)$

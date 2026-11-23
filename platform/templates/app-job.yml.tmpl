@@ -4,5 +4,15 @@
     static_configs:
       - targets: ["$target"]
     metric_relabel_configs:
+      # Cardinality guard. Only labels the platform knows about survive the
+      # scrape; everything else is dropped before it reaches the TSDB. One app
+      # that puts an order id or a user id in a label multiplies series without
+      # bound and ends the stack; this allowlist costs one regex per scrape and
+      # is cheaper than the outage. __name__, job and instance are injected by
+      # Prometheus and must be kept, as must le/quantile for histograms and
+      # summaries. Infrastructure jobs (prometheus, node-exporter, alloy) do not
+      # get this guard: their label sets are large and legitimately varied.
+      - action: labelkeep
+        regex: "__name__|service|route|endpoint|status|le|quantile|job|instance|version"
       - target_label: service
         replacement: $name

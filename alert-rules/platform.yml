@@ -1,0 +1,83 @@
+# Hand-written platform self-monitoring rules.
+#
+# These alert on the observability stack itself (Prometheus scrape health, TSDB
+# size, rule evaluation) rather than on a service. They are deliberately NOT
+# generated from services/*.yaml: they describe the platform, not an application
+# contract, and must survive every descriptor being added or deleted.
+#
+# Loaded by the existing /etc/prometheus-rules/*.yml glob alongside rules.yml.
+#
+# Every expression below was checked against this Prometheus before shipping.
+# `alertmanager_notifications_failed_total` was NOT included: Alertmanager is not
+# a scrape target here (7 targets: prometheus, node-exporter, alloy and the four
+# app jobs), so no alertmanager_* series exist in the TSDB and a delivery-failure
+# rule could never fire. Adding an Alertmanager job is a deliberate platform
+# change, not something this file should assume.
+groups:
+  - name: platform
+    rules:
+      # Any scrape target that has been unreachable for a full 5m. The app-level
+      # <Service>Down alerts are generated per descriptor; this one also covers
+      # the infrastructure targets.
+      - alert: PlatformTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: platform
+        annotations:
+          summary: "Scrape target {{ $labels.job }} is down"
+          description: "up == 0 for {{ $labels.job }} ({{ $labels.instance }}) for 5 minutes; the target is not being scraped."
+
+      # Volume collapse, not value collapse: a target that starts returning far
+      # fewer samples than its own recent maximum is usually broken, not quiet.
+      # 80% of the 1h max leaves room for ordinary churn.
+      - alert: PlatformScrapeSamplesDrop
+        expr: scrape_samples_scraped < 0.8 * max_over_time(scrape_samples_scraped[1h])
+        for: 10m
+        labels:
+          severity: warning
+          component: platform
+        annotations:
+          summary: "Scrape volume dropped for {{ $labels.job }}"
+          description: "{{ $labels.job }} ({{ $labels.instance }}) is exposing under 80% of its 1h-high sample count (current: {{ $value }}) for 10 minutes."
+
+      # Head series measured 2026-11-23 at 3018 with the full four-service demo
+      # running (node-exporter alone is ~1280). 9000 is ~3x that: enough headroom
+      # for onboarding services without paging on steady-state growth, low
+      # enough to catch an unbounded label before disk or the 512Mi mem_limit
+      # becomes the symptom. Paired with the labelkeep guard in the app jobs.
+      - alert: PlatformTSDBHighSeries
+        expr: prometheus_tsdb_head_series > 9000
+        for: 10m
+        labels:
+          severity: warning
+          component: platform
+        annotations:
+          summary: "Prometheus head series above 9000"
+          description: "prometheus_tsdb_head_series is {{ $value }} (threshold 9000, measured baseline 3018); check recent descriptor onboarding and label cardinality."
+
+      # Any rule evaluation failure means alerts and recording rules are silently
+      # not being produced. rate() so a restart-reset counter cannot look like a
+      # permanent alert, and > 0 rather than a threshold: one failure matters.
+      - alert: PlatformRuleEvaluationFailing
+        expr: rate(prometheus_rule_evaluation_failures_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: platform
+        annotations:
+          summary: "Rule evaluation failing for {{ $labels.rule_group }}"
+          description: "{{ $labels.rule_group }} has failed evaluation in the last 5 minutes ({{ $value | printf \"%.4f\" }} failures/s). Alerts from that group are stale."
+
+      # Dead-man's switch. vector(1) is always true, so this alert is expected to
+      # be firing permanently; it proves the Prometheus -> Alertmanager -> receiver
+      # chain is alive. Silence it at the Alertmanager, never by deleting it.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+          component: platform
+        annotations:
+          summary: "Watchdog: alerting pipeline is alive"
+          description: "Always firing by design. If this alert disappears, alert delivery is broken."
