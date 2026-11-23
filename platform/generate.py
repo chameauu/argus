@@ -3,7 +3,7 @@
 
 Every per-service output is derived from ``services/<name>.yaml`` through a
 ``string.Template`` in ``platform/templates/``. The descriptor parser and
-validator are reused from ``contract_check.py``; this module does not carry a
+validator are reused from ``descriptor.py``; this module does not carry a
 second YAML reader.
 
 Generated:
@@ -46,7 +46,7 @@ import tempfile
 from pathlib import Path
 from string import Template
 
-from contract_check import YamlError, parse_descriptor, validate_descriptor
+from descriptor import YamlError, parse_descriptor, validate_descriptor
 
 PLATFORM_DIR = Path(__file__).resolve().parent
 TEMPLATE_DIR = PLATFORM_DIR / "templates"

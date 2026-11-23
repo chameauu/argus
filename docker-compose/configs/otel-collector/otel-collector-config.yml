@@ -77,7 +77,7 @@ processors:
   # silently polluting the store. This is a deliberate contract violation, not
   # a partial success: the receiver still answers 200/partialSuccess, and the
   # drop is silent in the collector log by design, which is why
-  # platform/contract_check.py probes for it instead of trusting the response.
+  # platform/contract_live.py probes for it instead of trusting the response.
   #
   # `filter` is applied after `resource` so it inspects the original
   # service.name (the resource processor only inserts a copy and never removes

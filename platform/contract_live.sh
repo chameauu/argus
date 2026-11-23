@@ -19,7 +19,7 @@ prometheus="${ARGUS_PROMETHEUS_URL:-http://localhost:19090}"
 args=()
 for descriptor in services/*.yaml; do
   name="$(basename "$descriptor" .yaml)"
-  port="$(python3 -c 'import sys; sys.path.insert(0, "platform"); from contract_check import parse_descriptor; print(parse_descriptor(open(sys.argv[1], encoding="utf-8").read())["scrape"]["port"])' "$descriptor")"
+  port="$(python3 -c 'import sys; sys.path.insert(0, "platform"); from descriptor import parse_descriptor; print(parse_descriptor(open(sys.argv[1], encoding="utf-8").read())["scrape"]["port"])' "$descriptor")"
   host_port="$(docker compose -f "$compose" port "$name" "$port" 2>/dev/null | awk -F: 'END {print $NF}')" || true
   if [ -z "$host_port" ]; then
     echo "no published host port for $name (scrape.port $port); is it in $compose?" >&2
@@ -37,4 +37,4 @@ echo
 # nobody reviewed, which is how spanmetrics lived only in memory for an hour.
 python3 platform/config_parity.py
 
-exec python3 platform/contract_check.py "${args[@]}" --prometheus "$prometheus"
+exec python3 platform/contract_live.py "${args[@]}" --prometheus "$prometheus"

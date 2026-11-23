@@ -76,6 +76,16 @@ repos:
         pass_filenames: false
         files: ^docker-compose/configs/alloy/.*\.alloy$
 
+      # Offline descriptor gate: no network, no Docker, no stack. This is what
+      # an app team can run in its own CI, and it fails fast before the
+      # Docker-backed generator and rule gates below.
+      - id: platform-contract-lint
+        name: descriptor lint (offline, no stack required)
+        entry: python3 platform/contract_lint.py
+        language: system
+        pass_filenames: false
+        files: ^(services/.*\.ya?ml|platform/(descriptor|contract_lint)\.py)$
+
       # The generator owns alert-rules/generated, dashboards/generated and
       # runbooks/generated, so drift includes orphaned artefacts from a deleted
       # descriptor. Note: --check shells out to Docker for Sloth and therefore

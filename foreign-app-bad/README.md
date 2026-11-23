@@ -22,7 +22,7 @@ docker run --rm -p 18098:8098 foreign-app-bad
 
 > **This app is a test fixture, not a service.** It deliberately violates four contract
 > rules (no `/healthz`, raw-path `route` labels, no `trace_id` in logs, no OTLP exporter).
-> Phase 3 used it to prove the platform refuses a non-conforming app: `contract_check`
+> Phase 3 used it to prove the platform refuses a non-conforming app: `contract_live`
 > returned exit 1 with `route_label`, `healthz`, `otlp_traces` and `trace_id_log_format`
 > failing. It has no descriptor and no compose entry on purpose — onboarding it would
 > make a permanently broken service real.
