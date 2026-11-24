@@ -33,26 +33,35 @@ Scrape targets: **9 up** — prometheus, node-exporter, cadvisor, alloy, alertma
 
 Two tiers, and the distinction is the honest one to make when describing this project.
 
-**Tier A — attach. No platform edit.** Point an application at the collector and name it:
+**Tier A — attach. No platform edit.** An OTLP-instrumented app that sets `service.name` and can
+reach the collector attaches with two variables:
 
 ```bash
 OTEL_SERVICE_NAME=my-app
 OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:4318     # 4317 for gRPC
 ```
 
-Traces, metrics and logs land. The collector drops anything without `service.name` (silently at
-the SDK, which is why `otlp_service_name` probes the store rather than trusting the response),
-stamps `service` from the resource, and derives RED from spans via the `spanmetrics` connector.
-The app appears in the `$service` selector on `Argus — Service` with request rate, error ratio and
-p95 computed from its spans — no naming convention, no descriptor, no pull request.
+Spans and metrics land. Logs land only if the app exports OTLP log records — stdout is tailed only
+for containers in this compose project, so a bare `docker run` container is otherwise invisible to
+Loki. The collector drops anything without `service.name` (silently at the SDK, which is why
+`otlp_service_name` probes the store rather than trusting the response), stamps `service` from the
+resource, and derives RED from spans via the `spanmetrics` connector. For HTTP services the app then
+appears in the `$service` selector on `Argus — Service` with request rate, error ratio and p95
+computed from its spans — no naming convention, no descriptor, no pull request.
 
-`bash platform/attach_proof.sh <image> <service>` proves this end-to-end: it starts a container
-outside the repo with two env vars, drives traffic, and fails unless metrics, traces, logs and the
-span-derived RED row all materialise **and** `git status` is unchanged. Last run: `span-derived
-calls 12, 5 traces, 5 log lines, selectable in Argus — Service`.
+Two limits stated before anyone repeats them as capabilities: RED is derived from spans, so a
+service that emits metrics but no traces gets no RED row, and `metrics_expiration: 5m` removes any
+service from the selector five minutes after its last span. And only HTTP instrumentation has been
+exercised here — gRPC and batch workloads are untested, not supported.
 
-**Tier B — curate. One descriptor.** SLOs, burn-rate pages and runbooks are claims about your
-service that telemetry cannot invent, so they are declared:
+`bash platform/attach_proof.sh <image> <service>` proves this end-to-end: it resolves the repo root
+from its own location, starts a container outside the repo with two env vars, drives traffic, and
+fails unless span-derived calls, traces, logs and dashboard selectability all materialise **and** the
+repository is unchanged. Last run: `span-derived calls 12, 5 traces, 5 log lines, selectable in
+Argus — Service`.
+
+**Tier B — curate. One descriptor.** SLO and burn-rate *rules* and runbook stubs are claims about
+your service that telemetry cannot invent, so they are declared:
 
 ```yaml
 # services/webhook-receiver.yaml — minimal form
@@ -88,7 +97,13 @@ routes_allowlist: [/orders, /orders/{id}, /checkout]
 
 The dashboard is **not** generated per service — it is one hand-maintained dashboard
 (`dashboards/argus-service.json`) with a `$service` variable, so thirteen services and three
-hundred would use the same file.
+hundred would use the same file. It shows **span-derived RED only**; the three older dashboards
+(`argus-application`, `argus-slo`, `argus-traces`) are hand-built and still name `target-app` and
+`/work`, so they do not generalise.
+
+One claim this project does **not** make: no alert has ever reached a human. Rules generate, load,
+evaluate and fire; Alertmanager delivers to `webhook-receiver` on this host, and nothing pages out.
+"Burn-rate pages" is therefore an aspiration, not a capability — see `docs/platform/REMAINING-TASKS.md`.
 
 Generated files carry a do-not-edit header and are never hand-edited. Four gates keep that true:
 
