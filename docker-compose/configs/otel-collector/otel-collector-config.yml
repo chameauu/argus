@@ -37,6 +37,9 @@ receivers:
 connectors:
   spanmetrics:
     namespace: spanmetrics
+    # Cumulative connector state: without an expiry a service keeps appearing in
+    # `$service` after its container is gone (demo-attach survived its own removal).
+    metrics_expiration: 5m
     metrics_flush_interval: 15s
     dimensions:
       - name: http.request.method
