@@ -19,7 +19,7 @@ curl -sf -X POST "${TARGET_URL}/admin/fault?delay_seconds=0.5" | jq -c .
 deadline=$(( $(date +%s) + 300 ))
 burning=0
 while [ "$(date +%s)" -lt "${deadline}" ]; do
-  ratio=$(sli 'slo:latency:ratio5m')
+  ratio=$(sli '1 - slo:sli_error:ratio_rate5m{sloth_service="target-app",sloth_slo="latency"}')
   burn=$(awk -v r="${ratio}" 'BEGIN { printf "%.1f", (1 - r) / 0.05 }')
   echo "ratio5m=${ratio} burn=${burn}x"
   if awk -v b="${burn}" 'BEGIN { exit !(b > 14.4) }'; then burning=1; break; fi
@@ -30,5 +30,5 @@ done
 echo "== clearing the fault =="
 curl -sf -X POST "${TARGET_URL}/admin/fault/reset" | jq -c .
 
-wait_sli 'slo:latency:ratio5m' '>=' 0.95 300
+wait_sli '1 - slo:sli_error:ratio_rate5m{sloth_service="target-app",sloth_slo="latency"}' '>=' 0.95 300
 echo "PASS: injected latency drove the fast-window burn above 14.4x and the SLI recovered."
