@@ -91,13 +91,13 @@ processors:
     error_mode: ignore
     metrics:
       datapoint:
-        - 'resource.attributes["service.name"] == nil or resource.attributes["service.name"] == ""'
+        - 'resource.attributes["service.name"] == nil or resource.attributes["service.name"] == "" or IsMatch(resource.attributes["service.name"], "^unknown_service")'
     traces:
       span:
-        - 'resource.attributes["service.name"] == nil or resource.attributes["service.name"] == ""'
+        - 'resource.attributes["service.name"] == nil or resource.attributes["service.name"] == "" or IsMatch(resource.attributes["service.name"], "^unknown_service")'
     logs:
       log_record:
-        - 'resource.attributes["service.name"] == nil or resource.attributes["service.name"] == ""'
+        - 'resource.attributes["service.name"] == nil or resource.attributes["service.name"] == "" or IsMatch(resource.attributes["service.name"], "^unknown_service")'
 
   batch:
     timeout: 5s
