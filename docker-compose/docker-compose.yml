@@ -193,7 +193,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
-    mem_limit: 256m
+    mem_limit: 512m
     depends_on:
       custom-exporter:
         condition: service_healthy
@@ -332,7 +332,8 @@ services:
         - "4318:4318"
     networks:
       - obs-net
-    mem_limit: 256m
+    mem_limit: 512m   # spanmetrics keeps per-service dimensions in memory: 256m sat at 93%
+                      # and tripped ContainerMemoryHigh; the limiter is 400 MiB of this 512m.
     depends_on:
       tempo:
         condition: service_healthy

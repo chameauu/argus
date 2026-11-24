@@ -55,7 +55,7 @@ processors:
   # a burst from one misbehaving application.
   memory_limiter:
     check_interval: 2s
-    limit_mib: 200
+    limit_mib: 400
 
   resource:
     attributes:
