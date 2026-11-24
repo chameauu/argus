@@ -1,0 +1,23 @@
+# Tier B descriptor for the PostgreSQL *exporter*, not for the database. The
+# database cannot send OTLP; postgres_exporter exposes its state on :9187 and
+# the platform scrapes it. The generated job targets demo-postgres:9187, which
+# is the network alias given to the exporter in docker-compose.yml.
+#
+# Deliberately minimal: no `metrics`, `slos` or `routes_allowlist`. The platform
+# therefore generates a scrape job, a `DemoPostgresDown` alert and a runbook,
+# and no SLO file. The `service` label is applied by the generator's relabel
+# config, not by the exporter.
+name: demo-postgres
+owner: jmal
+namespace: argus
+environment: local
+
+scrape:
+  port: 9187
+  path: /metrics
+  interval: 30s
+
+health:
+  path: /-/healthy
+
+runbook: runbooks/generated/demo-postgres.md

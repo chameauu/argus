@@ -1,0 +1,85 @@
+# Two applications, one integration each:
+#   backend       -> Tier A: OTLP env vars only, no descriptor.
+#   postgres      -> Tier B: scraped through postgres-exporter + a descriptor.
+# The project name is fixed so `docker compose down` cannot touch argus.
+name: demo-pair
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: pw
+      POSTGRES_DB: orders
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - obs-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orders"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    mem_limit: 256m
+
+  # PostgreSQL has no OTLP client and cannot attach like the backend can. The
+  # exporter is the bridge: it connects to postgres and exposes /metrics, and
+  # Argus discovers it by scraping (descriptor services/demo-postgres.yaml).
+  postgres-exporter:
+    # v0.15.2 does not exist: Docker Hub and Quay both publish v0.15.0 then
+    # v0.16.0. v0.15.0 is the nearest real release in that line.
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:pw@postgres:5432/orders?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Published only so the example can show what the contract checker does
+      # with a scrape-only service. Prometheus itself uses demo-postgres:9187.
+      - "19187:9187"
+    networks:
+      obs-net:
+        # The generated scrape job targets demo-postgres:9187. Compose would
+        # otherwise publish only the service name (`postgres-exporter`), so this
+        # alias is the join between the descriptor name and the container.
+        aliases:
+          - demo-postgres
+    mem_limit: 64m
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      OTEL_SERVICE_NAME: demo-backend
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      DATABASE_URL: postgresql://postgres:pw@postgres:5432/orders
+    ports:
+      - "18001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - obs-net
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
+    mem_limit: 192m
+
+volumes:
+  pgdata:
+
+networks:
+  obs-net:
+    external: true
+    name: argus_obs-net

@@ -1,0 +1,12 @@
+# Pinned for reproducibility. Note the one deviation from the task brief:
+# psycopg2-binary 2.9.9 publishes no cp313 wheel and its sdist fails to build
+# against Python 3.13's headers, so this example keeps Python 3.13 and uses the
+# next patch release, which added the cp313 wheel. 2.9.10 is API-compatible.
+fastapi==0.115.0
+uvicorn==0.30.6
+psycopg2-binary==2.9.10
+opentelemetry-sdk==1.29.0
+opentelemetry-exporter-otlp-proto-http==1.29.0
+opentelemetry-instrumentation-fastapi==0.50b0
+opentelemetry-instrumentation-psycopg2==0.50b0
+opentelemetry-instrumentation-logging==0.50b0
