@@ -299,6 +299,34 @@ docker volume inspect argus_prometheus-data
 
 Never delete a live Prometheus TSDB or Tempo WAL directory.
 
+### A service disappeared from the `$service` selector
+
+Expected. Span-derived metrics come with `metrics_expiration: 5m`, so a service that stops sending
+traces drops out of the selector five minutes after its last span. That is the correct behaviour —
+a cumulative connector would otherwise keep a deleted service in the dropdown forever, which is how
+`demo-attach` outlived its own container once. If a service you expect is missing, check the
+container is running and its spans still reach the collector before suspecting the dashboard:
+
+```bash
+curl -s --get --data-urlencode 'query=count by (service)(spanmetrics_calls_total)' \
+  localhost:19090/api/v1/query | jq -r '.data.result[] | "\(.metric.service)=\(.value[1])"'
+```
+
+### A burn-rate alert will not clear after a short fault
+
+This is the multi-window design, not a stuck alert. A five-minute fault trips the page on the 5m/1h
+windows and it clears in minutes; the same fault stays inside the 6h and 3d windows, so the
+`warning` ticket lingers for hours even though nothing is broken. Measured on this stack: after the
+injection, `rate6h = 0.00512` against a 0.5% budget — true by 0.00012.
+
+Two honest options: wait, or dilute the long window with healthy traffic. 6 000 extra `/work`
+requests took `rate6h` from 0.00511 to 0.00414 and the alert resolved. Do not raise the threshold
+to silence it — that hides the next real burn.
+
+```bash
+for i in $(seq 1 12); do seq 1 500 | xargs -P 8 -I{} curl -s -o /dev/null http://localhost:18000/work; done
+```
+
 ## Load testing and chaos
 
 k6 profiles run inside the Compose network and need no published ports:
